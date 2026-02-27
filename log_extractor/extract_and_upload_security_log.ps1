@@ -4,6 +4,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$endpointID = "123"
+$logID = "0"
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
@@ -19,7 +21,7 @@ if (-not (Test-Path $logFilePath)) {
 
 Write-Host "Uploading log file to $BackendUrl ..."
 try {
-    $response = curl.exe -sS -f -X POST "$BackendUrl" -F "log_file=@$logFilePath"
+    $response = curl.exe -sS -f -X POST "$BackendUrl" -F "endpointID=$endpointID" -F "logID=$logID" -F "log_file=@$logFilePath"
 
     if ($LASTEXITCODE -ne 0) {
         throw "Upload failed."
