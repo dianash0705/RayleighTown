@@ -21,11 +21,30 @@ python setup_environment.py
 
 This creates persistent backend state (for example `backend/data/logs.db`).
 
+## Optional: copy project to isolated test directory
+
+From repository root:
+
+```powershell
+./setup_test_environment.ps1 -TargetPath "C:\temp\RayleighTownTest"
+```
+
+The script copies project files to the target location and excludes local/git artifacts.
+
 ## Run app (run any time)
 
 ```bash
 python app.py
 ```
+
+## Demo shortcut (from repository root)
+
+```powershell
+./run_demo_backend.ps1
+```
+
+This runs install + setup + app start in one command.
+It always uses a local repository virtual environment (`.venv`) and creates it if needed.
 
 ## Upload API
 
