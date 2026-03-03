@@ -2,8 +2,7 @@
 
 ## Structure
 
-- `app.py`: thin runtime entrypoint only
-- `app_factory.py`: creates Flask app and wires routes
+- `app.py`: creates Flask app, validates runtime environment, wires routes, and runs server
 - `bootstrap.py`: one-time setup + runtime validation helpers
 - `config.py`: paths/config constants
 - `database.py`: SQLite schema and inserts
