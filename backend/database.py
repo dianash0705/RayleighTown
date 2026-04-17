@@ -11,7 +11,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS logs (
             endpointID TEXT NOT NULL,
             internalEventID INTEGER NOT NULL,
-            timestamp TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
             logID INTEGER NOT NULL,
             nativeEventID INTEGER NOT NULL,
             internalEventType INTEGER NOT NULL,
@@ -24,8 +24,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS alerts (
             alertID INTEGER PRIMARY KEY AUTOINCREMENT,
             endpointID TEXT NOT NULL,
-            tsBegin TEXT NOT NULL,
-            tsEnd TEXT NOT NULL,
+            tsBegin INTEGER NOT NULL,
+            tsEnd INTEGER NOT NULL,
             periodTs REAL,
             confidence INTEGER NOT NULL
         )
@@ -56,7 +56,9 @@ def insert_events(endpoint_id: str, log_id: int, events):
     max_id_row = cursor.fetchone()
     next_internal_event_id = 0 if max_id_row[0] is None else max_id_row[0] + 1
 
-    for timestamp, native_event_id in events:
+    for timestamp_ms, native_event_id in events:
+        if not isinstance(timestamp_ms, int):
+            raise TypeError("timestamp_ms must be int")
         cursor.execute(
             """
             INSERT INTO logs (
@@ -71,7 +73,7 @@ def insert_events(endpoint_id: str, log_id: int, events):
             (
                 endpoint_id,
                 next_internal_event_id,
-                timestamp,
+                timestamp_ms,
                 log_id,
                 native_event_id,
                 native_event_id,
@@ -103,7 +105,7 @@ def fetch_events_for_endpoint(endpoint_id: str) -> list[EventRecord]:
         EventRecord(
             internal_event_id=internal_event_id,
             native_event_id=native_event_id,
-            timestamp=timestamp,
+            timestamp_ms=timestamp,
         )
         for internal_event_id, native_event_id, timestamp in rows
     ]

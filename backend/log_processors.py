@@ -1,8 +1,29 @@
+from datetime import datetime, timezone
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 EVENT_XML_NAMESPACE = {"e": "http://schemas.microsoft.com/win/2004/08/events/event"}
+
+
+def _system_time_to_epoch_ms(system_time_text: str) -> int:
+    normalized = system_time_text.strip().replace("Z", "+00:00")
+
+    # fromisoformat supports up to 6 fractional second digits.
+    if "." in normalized:
+        main_part, _, remainder = normalized.partition(".")
+        plus_idx = remainder.find("+")
+        minus_idx = remainder.find("-")
+        tz_candidates = [index for index in (plus_idx, minus_idx) if index != -1]
+        if tz_candidates:
+            tz_idx = min(tz_candidates)
+            normalized = f"{main_part}.{remainder[:tz_idx][:6]}{remainder[tz_idx:]}"
+
+    dt = datetime.fromisoformat(normalized)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return int(dt.timestamp() * 1000)
 
 
 def extract_windows_evtx_events(log_path: Path, event_id_whitelist):
@@ -46,10 +67,15 @@ def extract_windows_evtx_events(log_path: Path, event_id_whitelist):
         if time_node is None:
             continue
 
-        timestamp = time_node.attrib.get("SystemTime")
-        if not timestamp:
+        system_time_text = time_node.attrib.get("SystemTime")
+        if not system_time_text:
             continue
 
-        events.append((timestamp, native_event_id))
+        try:
+            timestamp_ms = _system_time_to_epoch_ms(system_time_text)
+        except ValueError:
+            continue
+
+        events.append((timestamp_ms, native_event_id))
 
     return events

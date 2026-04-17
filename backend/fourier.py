@@ -2,6 +2,12 @@ import numpy as np
 import math
 import random
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # Keep function usable even if tqdm is not installed.
+    def tqdm(iterable, **kwargs):
+        return iterable
+
 RADIUS = 15_000
 PERCENTILE = 0.10
 SMALLEST_PERIOD_MS = 1_000 # in milliseconds, needs to be greater than the expected JITTER
@@ -29,7 +35,7 @@ def get_candidate_periods_ms(time_range_ms: float) -> list[float]:
     ]
     return periods_ms
 
-def fourier_transform(timestamps: list[float]):
+def fourier_transform(timestamps: list[float], show_progress: bool = False):
     if len(timestamps) < 2:
         raise ValueError("timestamps must contain at least two values")
 
@@ -38,7 +44,13 @@ def fourier_transform(timestamps: list[float]):
 
     point_xs = []
     point_ys = []
-    for period_ms in periods_ms:
+    period_iterator = tqdm(
+        periods_ms,
+        desc="Fourier transform",
+        unit="period",
+        disable=not show_progress,
+    )
+    for period_ms in period_iterator:
         sum_x = 0
         sum_y = 0
         for time_of_event in timestamps:
@@ -147,61 +159,61 @@ def generate_fake_timestamps_ms() -> list[float]:
     timestamps.sort()
     return [float(ts) for ts in timestamps]
 
+def test():
+    import matplotlib.pyplot as plt
+    timestamps_ms = generate_fake_timestamps_ms()
+    xs, ys = fourier_transform(timestamps_ms, show_progress=True)
 
-import matplotlib.pyplot as plt
-timestamps_ms = generate_fake_timestamps_ms()
-xs, ys = fourier_transform(timestamps_ms)
+    points = [(float(xs[i]), float(ys[i])) for i in range(len(ys))]
+    all_local_max_indices = finding_max(ys)
+    local_max_points = [points[index] for index in all_local_max_indices]
 
-points = [(float(xs[i]), float(ys[i])) for i in range(len(ys))]
-all_local_max_indices = finding_max(ys)
-local_max_points = [points[index] for index in all_local_max_indices]
-
-# Local-max-first flow: find local maxima, suppress nearby maxima,
-# then keep only the strongest percentile from the suppressed set.
-suppressed_local_max_points = local_max_suppression(radius=RADIUS, local_maxs=local_max_points)
-top_percent_suppressed_local_max_points = filter_top_percent(
-    suppressed_local_max_points,
-    top_percent=PERCENTILE,
-)
+    # Local-max-first flow: find local maxima, suppress nearby maxima,
+    # then keep only the strongest percentile from the suppressed set.
+    suppressed_local_max_points = local_max_suppression(radius=RADIUS, local_maxs=local_max_points)
+    top_percent_suppressed_local_max_points = filter_top_percent(
+        suppressed_local_max_points,
+        top_percent=PERCENTILE,
+    )
 
 
-plt.plot(xs, ys, label='Fourier magnitude from fake timestamps (ms)')
+    plt.plot(xs, ys, label='Fourier magnitude from fake timestamps (ms)')
 
-plt.scatter(
-    [point[0] for point in local_max_points],
-    [point[1] for point in local_max_points],
-    color='deepskyblue',
-    marker='*',
-    s=110,
-    alpha=0.50,
-    edgecolors='black',
-    linewidths=0.6,
-    label='all local maxima',
-    zorder=2,
-)
-plt.scatter(
-    [point[0] for point in suppressed_local_max_points],
-    [point[1] for point in suppressed_local_max_points],
-    color='red',
-    marker='x',
-    s=80,
-    linewidths=1.4,
-    label='kept after suppression',
-    zorder=3,
-)
-plt.scatter(
-    [point[0] for point in top_percent_suppressed_local_max_points],
-    [point[1] for point in top_percent_suppressed_local_max_points],
-    facecolors='none',
-    edgecolors='orange',
-    marker='o',
-    s=220,
-    linewidths=2.4,
-    label='top percentile after suppression',
-    zorder=5,
-)
-plt.title('Fourier Magnitudes From Synthetic Event Timestamps')
-plt.xlabel('Candidate period (milliseconds)')
-plt.ylabel('Magnitude')
-plt.legend()
-plt.show()
+    plt.scatter(
+        [point[0] for point in local_max_points],
+        [point[1] for point in local_max_points],
+        color='deepskyblue',
+        marker='*',
+        s=110,
+        alpha=0.50,
+        edgecolors='black',
+        linewidths=0.6,
+        label='all local maxima',
+        zorder=2,
+    )
+    plt.scatter(
+        [point[0] for point in suppressed_local_max_points],
+        [point[1] for point in suppressed_local_max_points],
+        color='red',
+        marker='x',
+        s=80,
+        linewidths=1.4,
+        label='kept after suppression',
+        zorder=3,
+    )
+    plt.scatter(
+        [point[0] for point in top_percent_suppressed_local_max_points],
+        [point[1] for point in top_percent_suppressed_local_max_points],
+        facecolors='none',
+        edgecolors='orange',
+        marker='o',
+        s=220,
+        linewidths=2.4,
+        label='top percentile after suppression',
+        zorder=5,
+    )
+    plt.title('Fourier Magnitudes From Synthetic Event Timestamps')
+    plt.xlabel('Candidate period (milliseconds)')
+    plt.ylabel('Magnitude')
+    plt.legend()
+    plt.show()
