@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Alerts Viewer (POC)</title>
+  <style>
+    body { font-family: sans-serif; margin: 16px; }
+    form { margin-bottom: 12px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 6px; text-align: left; }
+    th { background: #f3f3f3; }
+  </style>
+</head>
+<body>
+  <h2>Endpoint Alerts</h2>
+
+  <form id="queryForm">
+    <label>
+      Endpoint ID:
+      <input id="endpointID" value="123" required />
+    </label>
+    <button type="submit">Load</button>
+  </form>
+
+  <div id="status"></div>
+
+  <table id="alertsTable" hidden>
+    <thead>
+      <tr>
+        <th>Alert ID</th>
+        <th>Endpoint</th>
+        <th>Start (ms)</th>
+        <th>End (ms)</th>
+        <th>Period (ms)</th>
+        <th>Confidence</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    const form = document.getElementById("queryForm");
+    const endpointInput = document.getElementById("endpointID");
+    const statusEl = document.getElementById("status");
+    const table = document.getElementById("alertsTable");
+    const tbody = table.querySelector("tbody");
+
+    function renderRows(alerts) {
+      tbody.innerHTML = "";
+      for (const alert of alerts) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + alert.alertID + "</td>" +
+          "<td>" + alert.endpointID + "</td>" +
+          "<td>" + alert.tsBegin + "</td>" +
+          "<td>" + alert.tsEnd + "</td>" +
+          "<td>" + alert.periodTs + "</td>" +
+          "<td>" + alert.confidence + "</td>";
+        tbody.appendChild(tr);
+      }
+      table.hidden = alerts.length === 0;
+    }
+
+    form.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const endpointID = endpointInput.value.trim();
+      if (!endpointID) {
+        return;
+      }
+
+      statusEl.textContent = "Loading...";
+      table.hidden = true;
+      tbody.innerHTML = "";
+
+      try {
+        const response = await fetch("/api/alerts?endpointID=" + encodeURIComponent(endpointID));
+        const data = await response.json();
+
+        if (!response.ok) {
+          statusEl.textContent = data.error || "Failed to load alerts";
+          return;
+        }
+
+        statusEl.textContent = "Found " + data.count + " alert(s)";
+        renderRows(data.alerts);
+      } catch (error) {
+        statusEl.textContent = "Network error";
+      }
+    });
+  </script>
+</body>
+</html>

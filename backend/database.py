@@ -165,3 +165,31 @@ def recompute_alerts_for_endpoint(endpoint_id: str) -> int:
         fetch_events=fetch_events_for_endpoint,
         publish_alerts=replace_alerts_for_endpoint,
     )
+
+
+def fetch_alerts_for_endpoint(endpoint_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT alertID, endpointID, tsBegin, tsEnd, periodTs, confidence
+        FROM alerts
+        WHERE endpointID = ?
+        ORDER BY confidence DESC, tsBegin DESC
+        """,
+        (endpoint_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "alertID": row[0],
+            "endpointID": row[1],
+            "tsBegin": row[2],
+            "tsEnd": row[3],
+            "periodTs": row[4],
+            "confidence": row[5],
+        }
+        for row in rows
+    ]

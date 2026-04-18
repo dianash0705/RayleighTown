@@ -5,11 +5,26 @@ from flask import jsonify, request
 from werkzeug.utils import secure_filename
 
 from config import UPLOAD_DIR
-from database import insert_events
+from database import fetch_alerts_for_endpoint, insert_events
 from log_registry import LOG_TYPE_CONFIG
 
 
 def register_routes(app):
+    @app.get("/api/alerts")
+    def get_alerts():
+        endpoint_id = request.args.get("endpointID")
+        if not endpoint_id:
+            return jsonify({"error": "Missing query parameter 'endpointID'."}), 400
+
+        alerts = fetch_alerts_for_endpoint(endpoint_id)
+        return jsonify(
+            {
+                "endpointID": endpoint_id,
+                "count": len(alerts),
+                "alerts": alerts,
+            }
+        ), 200
+
     @app.post("/api/logs/upload")
     def upload_log():
         endpoint_id = request.form.get("endpointID")
