@@ -38,6 +38,22 @@ The script copies project files to the target location and excludes local/git ar
 python app.py
 ```
 
+Use a different port if needed:
+
+```bash
+python app.py --port 5001
+```
+
+Open the web app in your browser at:
+
+```text
+http://localhost:5000/
+```
+
+If you change the port, open `http://localhost:<your-port>/` instead.
+
+That page loads the alerts viewer in `backend/static/alerts.html` and calls the backend API from the same server.
+
 ## Run brain manually (on demand)
 
 ```bash
@@ -48,6 +64,12 @@ python run_brain.py --endpointID 123
 
 ```powershell
 ./run_demo_backend.ps1
+```
+
+Use a different backend port with the demo shortcut:
+
+```powershell
+./run_demo_backend.ps1 -Port 5001
 ```
 
 This runs install + setup + app start in one command.
@@ -66,7 +88,15 @@ On upload, backend will:
 4. Insert matching events into SQLite DB table `logs`
 
 Currently supported log types:
-- `0` = Windows Security (`.evtx`) with whitelist `4624`, `4625`, `4634`
+- `0` = Windows Security (`.evtx`) with whitelist `4688`, `4698`, `4702`, `4624`, `4703`
+
+Saved event names for `logID=0`:
+
+- `4688` = Process Creation
+- `4698` = Scheduled Task Created/Updated
+- `4702` = Scheduled Task Created/Updated
+- `4624` = Successful Logon
+- `4703` = Token Right Adjusted
 
 Database path: `backend/data/logs.db`
 

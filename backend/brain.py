@@ -7,6 +7,7 @@ from fourier import (
     finding_max,
     fourier_transform,
     local_max_suppression,
+    plot_fourier_points,
 )
 
 MIN_EVENTS_FOR_ALERT = 4
@@ -53,7 +54,12 @@ def _group_logs_by_native_event(events: Iterable[EventRecord]):
     return grouped
 
 
-def build_alert_from_sorted_timestamps_ms(sorted_timestamps_ms: list[int]) -> AlertCore | None:
+def build_alert_from_sorted_timestamps_ms(
+    sorted_timestamps_ms: list[int],
+    endpoint_id: str,
+    native_event_id: int,
+    plot: bool = False,
+) -> AlertCore | None:
     if len(sorted_timestamps_ms) < MIN_EVENTS_FOR_ALERT:
         return None
 
@@ -83,6 +89,21 @@ def build_alert_from_sorted_timestamps_ms(sorted_timestamps_ms: list[int]) -> Al
     )
     if not top_percent_points:
         return None
+    # Generate a graph of the transform and mark important points when requested.
+    plot_path = None
+    if plot:
+        try:
+            plot_path = plot_fourier_points(
+                period_candidates_ms,
+                magnitudes,
+                local_max_points=local_max_points,
+                suppressed_local_max_points=suppressed_local_max_points,
+                top_percent_points=top_percent_points,
+                endpoint_id=endpoint_id,
+                native_event_id=native_event_id,
+            )
+        except Exception:
+            plot_path = None
 
     dominant_period_ms, dominant_magnitude = max(top_percent_points, key=lambda point: point[1])
     confidence = max(0, min(100, int(round(dominant_magnitude * 100))))
@@ -95,14 +116,19 @@ def build_alert_from_sorted_timestamps_ms(sorted_timestamps_ms: list[int]) -> Al
     )
 
 
-def build_alerts_for_endpoint(endpoint_id: str, events: Iterable[EventRecord]) -> list[AlertRecord]:
+def build_alerts_for_endpoint(endpoint_id: str, events: Iterable[EventRecord], plot: bool = False) -> list[AlertRecord]:
     grouped_by_native_event = _group_logs_by_native_event(events)
     alerts = []
 
     for native_event_id, native_events in grouped_by_native_event.items():
         native_events = sorted(native_events, key=lambda item: item.timestamp_ms)
         sorted_timestamps_ms = [event.timestamp_ms for event in native_events]
-        alert_core = build_alert_from_sorted_timestamps_ms(sorted_timestamps_ms)
+        alert_core = build_alert_from_sorted_timestamps_ms(
+            sorted_timestamps_ms,
+            endpoint_id=endpoint_id,
+            native_event_id=native_event_id,
+            plot=plot,
+        )
         if alert_core is None:
             continue
 
@@ -121,7 +147,7 @@ def build_alerts_for_endpoint(endpoint_id: str, events: Iterable[EventRecord]) -
     return alerts
 
 
-def run_brain_for_endpoint(endpoint_id: str, fetch_events: FetchEventsFn, publish_alerts: PublishAlertsFn) -> int:
+def run_brain_for_endpoint(endpoint_id: str, fetch_events: FetchEventsFn, publish_alerts: PublishAlertsFn, plot: bool = False) -> int:
     events = list(fetch_events(endpoint_id))
-    alerts = build_alerts_for_endpoint(endpoint_id, events)
+    alerts = build_alerts_for_endpoint(endpoint_id, events, plot=plot)
     return publish_alerts(endpoint_id, alerts)

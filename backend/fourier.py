@@ -1,6 +1,8 @@
-import numpy as np
 import math
 import random
+from datetime import datetime
+
+import numpy as np
 
 try:
     from tqdm.auto import tqdm
@@ -217,3 +219,65 @@ def test():
     plt.ylabel('Magnitude')
     plt.legend()
     plt.show()
+
+
+def plot_fourier_points(periods: list[float], magnitudes: list[float],
+                        local_max_points: list[tuple[float, float]] | None = None,
+                        suppressed_local_max_points: list[tuple[float, float]] | None = None,
+                        top_percent_points: list[tuple[float, float]] | None = None,
+                        endpoint_id: str | None = None,
+                        native_event_id: int | None = None,
+                        out_path: str | None = None) -> str:
+    """Create and save a plot of Fourier candidate periods vs magnitudes.
+
+    Highlights:
+    - local_max_points: all local maxima found
+    - suppressed_local_max_points: maxima kept after suppression
+    - top_percent_points: the top-percent strongest maxima after suppression
+
+    Returns the path to the saved PNG file.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import FuncFormatter
+    except Exception:
+        raise RuntimeError("matplotlib is required to generate plots. Install it in your environment.")
+
+    if not out_path:
+        from pathlib import Path
+        import uuid
+        out_dir = Path(__file__).parent / "static"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        endpoint_slug = str(endpoint_id) if endpoint_id is not None else "unknown-endpoint"
+        event_slug = str(native_event_id) if native_event_id is not None else "unknown-event"
+        out_path = str(out_dir / f"fourier_{timestamp}_endpoint-{endpoint_slug}_event-{event_slug}_{uuid.uuid4().hex}.png")
+
+    plt.figure(figsize=(10, 5))
+    rounded_periods = [round(period) for period in periods]
+    plt.plot(rounded_periods, magnitudes, label='Fourier magnitude')
+
+    def _scatter(points, **kwargs):
+        if points:
+            xs = [round(p[0]) for p in points]
+            ys = [p[1] for p in points]
+            plt.scatter(xs, ys, **kwargs)
+
+    _scatter(local_max_points, color='deepskyblue', marker='*', s=110, alpha=0.6, edgecolors='black', linewidths=0.6, label='local maxima')
+    _scatter(suppressed_local_max_points, color='red', marker='x', s=80, linewidths=1.4, label='kept after suppression')
+    _scatter(top_percent_points, facecolors='none', edgecolors='orange', marker='o', s=220, linewidths=2.4, label='top percentile after suppression')
+
+    ax = plt.gca()
+    ax.ticklabel_format(axis='x', style='plain', useOffset=False)
+    ax.xaxis.get_major_formatter().set_useOffset(False)
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _pos: f"{value:,.0f}"))
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos: f"{value:.3f}"))
+
+    plt.title('Fourier Magnitudes')
+    plt.xlabel('Candidate period (milliseconds)')
+    plt.ylabel('Magnitude')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+    return out_path

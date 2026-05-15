@@ -185,6 +185,15 @@
     const table = document.getElementById("alertsTable");
     const tbody = table.querySelector("tbody");
 
+    function formatMs(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) {
+        return value;
+      }
+
+      return Math.round(number).toLocaleString();
+    }
+
     function renderRows(alerts) {
       tbody.innerHTML = "";
       for (const alert of alerts) {
@@ -192,9 +201,9 @@
         tr.innerHTML =
           "<td>" + alert.alertID + "</td>" +
           "<td>" + alert.endpointID + "</td>" +
-          "<td>" + alert.tsBegin + "</td>" +
-          "<td>" + alert.tsEnd + "</td>" +
-          "<td>" + alert.periodTs + "</td>" +
+          "<td>" + formatMs(alert.tsBegin) + "</td>" +
+          "<td>" + formatMs(alert.tsEnd) + "</td>" +
+          "<td>" + formatMs(alert.periodTs) + "</td>" +
           "<td>" + alert.confidence + "</td>";
         tbody.appendChild(tr);
       }

@@ -1,27 +1,38 @@
 param(
-    [string]$BackendUrl = "http://localhost:5000/api/logs/upload",
-    [string]$OutputDir = "$PSScriptRoot\out"
+    [string]$BackendUrl = "http://localhost:2222/api/logs/upload",
+    [string]$OutputDir = "$PSScriptRoot\out",
+    [string]$EndpointID = "123",
+    [string]$CustomLogPath
 )
 
 $ErrorActionPreference = "Stop"
-$endpointID = "123"
 $logID = "0"
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$logFilePath = Join-Path $OutputDir "security_$timestamp.evtx"
+if ($CustomLogPath) {
+    if (-not (Test-Path -LiteralPath $CustomLogPath)) {
+        throw "Custom log path not found: $CustomLogPath"
+    }
 
-Write-Host "Exporting Windows Security log..."
-wevtutil epl Security "$logFilePath" /ow:true
+    $logFilePath = (Resolve-Path -LiteralPath $CustomLogPath).Path
+    Write-Host "Using custom log file: $logFilePath"
+}
+else {
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $logFilePath = Join-Path $OutputDir "security_$timestamp.evtx"
 
-if (-not (Test-Path $logFilePath)) {
-    throw "Failed to export Security log."
+    Write-Host "Exporting Windows Security log..."
+    wevtutil epl Security "$logFilePath" /ow:true
+
+    if (-not (Test-Path $logFilePath)) {
+        throw "Failed to export Security log."
+    }
 }
 
 Write-Host "Uploading log file to $BackendUrl ..."
 try {
-    $response = curl.exe -sS -f -X POST "$BackendUrl" -F "endpointID=$endpointID" -F "logID=$logID" -F "log_file=@$logFilePath"
+    $response = curl.exe -sS -f -X POST "$BackendUrl" -F "endpointID=$EndpointID" -F "logID=$logID" -F "log_file=@$logFilePath"
 
     if ($LASTEXITCODE -ne 0) {
         throw "Upload failed."
@@ -31,7 +42,7 @@ try {
     Write-Host $response
 }
 finally {
-    if (Test-Path $logFilePath) {
+    if (-not $CustomLogPath -and (Test-Path $logFilePath)) {
         Remove-Item -LiteralPath $logFilePath -Force
         Write-Host "Temporary log deleted: $logFilePath"
     }

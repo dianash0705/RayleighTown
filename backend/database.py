@@ -159,11 +159,12 @@ def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
     return len(alerts)
 
 
-def recompute_alerts_for_endpoint(endpoint_id: str) -> int:
+def recompute_alerts_for_endpoint(endpoint_id: str, plot: bool = False) -> int:
     return run_brain_for_endpoint(
         endpoint_id=endpoint_id,
         fetch_events=fetch_events_for_endpoint,
         publish_alerts=replace_alerts_for_endpoint,
+        plot=plot,
     )
 
 
