@@ -12,7 +12,7 @@ except ImportError:  # Keep function usable even if tqdm is not installed.
 
 RADIUS = 15_000
 PERCENTILE = 0.10
-SMALLEST_PERIOD_MS = 1_000 # in milliseconds, needs to be greater than the expected JITTER
+SMALLEST_PERIOD_MS = 1_100 # in milliseconds, needs to be greater than the expected JITTER
 SMALLEST_APPEARANCE_COUNT = 7 # idk once a week
 NUMBER_OF_DIFFERENT_PERIODS = 300
 
@@ -24,6 +24,25 @@ SECONDARY_PERIOD_MS = 1_080_000
 REPEATING_SERIES_PERIOD_MS = 900_000
 REPEATING_SERIES_PHASE_MS = 120_000
 MAX_JITTER_MS = 10_000
+
+def get_median_value(values: list[float]) -> float:
+    sorted_values = sorted(values)
+    n = len(sorted_values)
+    if n % 2 == 0:
+        return (sorted_values[n // 2 - 1] + sorted_values[n // 2]) / 2
+    else:
+        return sorted_values[n // 2]
+
+def filter_by_snr(points: list[tuple[float, float]], median: float, mad: float, min_snr: float) -> list[tuple[float, float]]:
+    if mad == 0:
+        return []
+
+    snr_values = []
+    for point in points:
+        snr = abs(point[1] - median) / mad
+        snr_values.append((point, snr))
+
+    return [point for point, snr in snr_values if snr >= min_snr]
 
 def get_candidate_periods_ms(time_range_ms: float) -> list[float]:
     largest_period_ms = time_range_ms / SMALLEST_APPEARANCE_COUNT
@@ -222,18 +241,20 @@ def test():
 
 
 def plot_fourier_points(periods: list[float], magnitudes: list[float],
-                        local_max_points: list[tuple[float, float]] | None = None,
-                        suppressed_local_max_points: list[tuple[float, float]] | None = None,
                         top_percent_points: list[tuple[float, float]] | None = None,
+                        high_snr_points: list[tuple[float, float]] | None = None,
+                        median: float | None = None,
+                        mad: float | None = None,
+                        snr_threshold: float | None = None,
                         endpoint_id: str | None = None,
                         native_event_id: int | None = None,
                         out_path: str | None = None) -> str:
     """Create and save a plot of Fourier candidate periods vs magnitudes.
 
     Highlights:
-    - local_max_points: all local maxima found
-    - suppressed_local_max_points: maxima kept after suppression
     - top_percent_points: the top-percent strongest maxima after suppression
+    - high_snr_points: the strongest points that also clear the SNR filter
+    - median / SNR lines: horizontal reference lines for the current filter basis
 
     Returns the path to the saved PNG file.
     """
@@ -263,9 +284,15 @@ def plot_fourier_points(periods: list[float], magnitudes: list[float],
             ys = [p[1] for p in points]
             plt.scatter(xs, ys, **kwargs)
 
-    _scatter(local_max_points, color='deepskyblue', marker='*', s=110, alpha=0.6, edgecolors='black', linewidths=0.6, label='local maxima')
-    _scatter(suppressed_local_max_points, color='red', marker='x', s=80, linewidths=1.4, label='kept after suppression')
     _scatter(top_percent_points, facecolors='none', edgecolors='orange', marker='o', s=220, linewidths=2.4, label='top percentile after suppression')
+    _scatter(high_snr_points, color='limegreen', marker='D', s=70, alpha=0.9, edgecolors='black', linewidths=0.6, label='high SNR points')
+
+    if median is not None:
+        plt.axhline(median, color='slateblue', linestyle='-', linewidth=1.8, label='median')
+    if median is not None and mad is not None and snr_threshold is not None:
+        snr_delta = snr_threshold * mad
+        plt.axhline(median + snr_delta, color='tomato', linestyle='--', linewidth=1.5, label=f'+{snr_threshold:g} SNR')
+        plt.axhline(median - snr_delta, color='tomato', linestyle='--', linewidth=1.5, label=f'-{snr_threshold:g} SNR')
 
     ax = plt.gca()
     ax.ticklabel_format(axis='x', style='plain', useOffset=False)

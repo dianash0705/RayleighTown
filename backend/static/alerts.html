@@ -167,6 +167,7 @@
       <thead>
         <tr>
           <th>Alert ID</th>
+          <th>Event ID</th>
           <th>Endpoint</th>
           <th>Start (ms)</th>
           <th>End (ms)</th>
@@ -200,6 +201,7 @@
         const tr = document.createElement("tr");
         tr.innerHTML =
           "<td>" + alert.alertID + "</td>" +
+          "<td>" + (alert.nativeEventID ?? "-") + "</td>" +
           "<td>" + alert.endpointID + "</td>" +
           "<td>" + formatMs(alert.tsBegin) + "</td>" +
           "<td>" + formatMs(alert.tsEnd) + "</td>" +

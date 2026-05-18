@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Callable, Iterable, List
 
 from fourier import (
     filter_top_percent,
@@ -8,13 +8,16 @@ from fourier import (
     fourier_transform,
     local_max_suppression,
     plot_fourier_points,
+    filter_by_snr,
+    get_median_value,
 )
 
 MIN_EVENTS_FOR_ALERT = 4
 UNKNOWN_TIMESTAMP_MS = -1
 UNKNOWN_CONFIDENCE = 0
-SUPPRESSION_RADIUS_MS = 15_000
+SUPPRESSION_RADIUS_MS = 500
 TOP_PERCENT = 0.10
+SNR_THRESHOLD = 3.0
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,29 @@ class AlertCore:
 
 FetchEventsFn = Callable[[str], Iterable[EventRecord]]
 PublishAlertsFn = Callable[[str, list[AlertRecord]], int]
+AlertBuilderFn = Callable[[list[int], "AlertBuildContext"], AlertCore | None]
+
+
+@dataclass(frozen=True)
+class AlertBuildContext:
+    endpoint_id: str
+    native_event_id: int
+    plot: bool = False
+
+
+ALERT_BUILDERS: dict[str, AlertBuilderFn] = {}
+
+
+def register_alert_builder(name: str, builder: AlertBuilderFn) -> None:
+    ALERT_BUILDERS[name] = builder
+
+
+def get_alert_builder(name: str) -> AlertBuilderFn:
+    try:
+        return ALERT_BUILDERS[name]
+    except KeyError as err:
+        available = ", ".join(sorted(ALERT_BUILDERS)) or "none"
+        raise ValueError(f"Unknown alert builder '{name}'. Available builders: {available}") from err
 
 
 def _group_logs_by_native_event(events: Iterable[EventRecord]):
@@ -54,12 +80,10 @@ def _group_logs_by_native_event(events: Iterable[EventRecord]):
     return grouped
 
 
-def build_alert_from_sorted_timestamps_ms(
+def build_fourier_alert_from_sorted_timestamps_ms(
     sorted_timestamps_ms: list[int],
-    endpoint_id: str,
-    native_event_id: int,
-    plot: bool = False,
-) -> AlertCore | None:
+    context: AlertBuildContext,
+) -> List[AlertCore] | None:
     if len(sorted_timestamps_ms) < MIN_EVENTS_FOR_ALERT:
         return None
 
@@ -71,6 +95,14 @@ def build_alert_from_sorted_timestamps_ms(
         return None
 
     points = list(zip(period_candidates_ms, magnitudes))
+
+    median = get_median_value(magnitudes)
+    distances_from_medians = []
+    for magnitude in magnitudes:
+        distance_from_median = abs(magnitude - median)
+        distances_from_medians.append(distance_from_median)
+    mad = get_median_value(distances_from_medians)
+
     local_max_indices = finding_max(magnitudes)
     local_max_points = [points[index] for index in local_max_indices]
     if not local_max_points:
@@ -89,50 +121,88 @@ def build_alert_from_sorted_timestamps_ms(
     )
     if not top_percent_points:
         return None
+
+    top_percent_points = suppressed_local_max_points
+    high_snr_points = filter_by_snr(
+        top_percent_points,
+        median=median,
+        mad=mad,
+        min_snr=SNR_THRESHOLD,
+    )
+
     # Generate a graph of the transform and mark important points when requested.
     plot_path = None
-    if plot:
+    if context.plot:
         try:
             plot_path = plot_fourier_points(
                 period_candidates_ms,
                 magnitudes,
-                local_max_points=local_max_points,
-                suppressed_local_max_points=suppressed_local_max_points,
                 top_percent_points=top_percent_points,
-                endpoint_id=endpoint_id,
-                native_event_id=native_event_id,
+                high_snr_points=high_snr_points,
+                median=median,
+                mad=mad,
+                snr_threshold=SNR_THRESHOLD,
+                endpoint_id=context.endpoint_id,
+                native_event_id=context.native_event_id,
             )
         except Exception:
             plot_path = None
 
-    dominant_period_ms, dominant_magnitude = max(top_percent_points, key=lambda point: point[1])
-    confidence = max(0, min(100, int(round(dominant_magnitude * 100))))
+    alerts = []
+    for point in high_snr_points:
+        confidence = max(0, min(100, int(round(point[1] * 100))))
+        alerts.append(
+            AlertCore(
+                ts_begin=sorted_timestamps_ms[0],
+                ts_end=sorted_timestamps_ms[-1],
+                period_ts=float(point[0]),
+                confidence=confidence,
+            ))
+    return alerts
 
-    return AlertCore(
-        ts_begin=sorted_timestamps_ms[0],
-        ts_end=sorted_timestamps_ms[-1],
-        period_ts=float(dominant_period_ms),
-        confidence=confidence,
+register_alert_builder("fourier", build_fourier_alert_from_sorted_timestamps_ms)
+
+
+def build_alerts_from_sorted_timestamps_ms(
+    sorted_timestamps_ms: list[int],
+    endpoint_id: str,
+    native_event_id: int,
+    method: str = "fourier",
+    plot: bool = False,
+) -> List[AlertCore] | None:
+    builder = get_alert_builder(method)
+    context = AlertBuildContext(
+        endpoint_id=endpoint_id,
+        native_event_id=native_event_id,
+        plot=plot,
     )
+    return builder(sorted_timestamps_ms, context)
 
 
-def build_alerts_for_endpoint(endpoint_id: str, events: Iterable[EventRecord], plot: bool = False) -> list[AlertRecord]:
+def build_alerts_for_endpoint(
+    endpoint_id: str,
+    events: Iterable[EventRecord],
+    method: str = "fourier",
+    plot: bool = False,
+) -> list[AlertRecord]:
     grouped_by_native_event = _group_logs_by_native_event(events)
     alerts = []
 
     for native_event_id, native_events in grouped_by_native_event.items():
         native_events = sorted(native_events, key=lambda item: item.timestamp_ms)
         sorted_timestamps_ms = [event.timestamp_ms for event in native_events]
-        alert_core = build_alert_from_sorted_timestamps_ms(
+        alert_cores = build_alerts_from_sorted_timestamps_ms(
             sorted_timestamps_ms,
             endpoint_id=endpoint_id,
             native_event_id=native_event_id,
+            method=method,
             plot=plot,
         )
-        if alert_core is None:
+        if not alert_cores:
             continue
 
-        alerts.append(
+        for alert_core in alert_cores:
+            alerts.append(
             AlertRecord(
                 endpoint_id=endpoint_id,
                 native_event_id=native_event_id,
@@ -147,7 +217,13 @@ def build_alerts_for_endpoint(endpoint_id: str, events: Iterable[EventRecord], p
     return alerts
 
 
-def run_brain_for_endpoint(endpoint_id: str, fetch_events: FetchEventsFn, publish_alerts: PublishAlertsFn, plot: bool = False) -> int:
+def run_brain_for_endpoint(
+    endpoint_id: str,
+    fetch_events: FetchEventsFn,
+    publish_alerts: PublishAlertsFn,
+    method: str = "fourier",
+    plot: bool = False,
+) -> int:
     events = list(fetch_events(endpoint_id))
-    alerts = build_alerts_for_endpoint(endpoint_id, events, plot=plot)
+    alerts = build_alerts_for_endpoint(endpoint_id, events, method=method, plot=plot)
     return publish_alerts(endpoint_id, alerts)

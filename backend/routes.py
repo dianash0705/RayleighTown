@@ -6,7 +6,7 @@ from werkzeug.utils import secure_filename
 
 from config import UPLOAD_DIR
 from database import fetch_alerts_for_endpoint, insert_events
-from log_registry import LOG_TYPE_CONFIG
+from log_registry import LOG_TYPE_CONFIG, LOG_SOURCE_MAP
 
 
 def register_routes(app):
@@ -36,6 +36,18 @@ def register_routes(app):
             log_id = int(log_id_raw)
         except ValueError:
             return jsonify({"error": "Invalid form field 'logID'. Must be an integer."}), 400
+
+        # Allow clients to indicate a source name for uploaded JSON logs. If provided,
+        # map the source name back to a configured logID and override the supplied logID.
+        source_name = request.form.get("sourceName")
+        if source_name:
+            mapped = None
+            for k, v in LOG_SOURCE_MAP.items():
+                if v == source_name:
+                    mapped = k
+                    break
+            if mapped is not None:
+                log_id = int(mapped)
 
         log_config = LOG_TYPE_CONFIG.get(log_id)
         if log_config is None:
@@ -70,6 +82,7 @@ def register_routes(app):
                 "inserted": inserted_count,
                 "logID": log_id,
                 "logType": log_config["name"],
+                "sourceName": source_name if source_name else None,
                 "filename": saved_name,
             }
         ), 201

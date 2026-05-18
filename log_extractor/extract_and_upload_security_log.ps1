@@ -29,10 +29,30 @@ else {
         throw "Failed to export Security log."
     }
 }
-
 Write-Host "Uploading log file to $BackendUrl ..."
 try {
-    $response = curl.exe -sS -f -X POST "$BackendUrl" -F "endpointID=$EndpointID" -F "logID=$logID" -F "log_file=@$logFilePath"
+    $additionalForm = @()
+
+    # If the file looks like JSON, try to extract a SourceName field to inform the server
+    if ([io.path]::GetExtension($logFilePath).ToLower() -eq '.json') {
+        try {
+            $firstLine = Get-Content -LiteralPath $logFilePath -TotalCount 1 -ErrorAction Stop
+            $maybeJson = $null
+            try { $maybeJson = $firstLine | ConvertFrom-Json -ErrorAction Stop } catch { $maybeJson = $null }
+            if ($maybeJson) {
+                $sourceName = $maybeJson.SourceName -or $maybeJson.source -or $maybeJson.Source -or $null
+                if ($sourceName) { $additionalForm += "-F"; $additionalForm += "sourceName=$sourceName" }
+            }
+        }
+        catch {
+            # ignore JSON read errors and continue uploading
+        }
+    }
+
+    $curlArgs = @('-sS','-f','-X','POST',"$BackendUrl","-F","endpointID=$EndpointID","-F","logID=$logID","-F","log_file=@$logFilePath")
+    if ($additionalForm.Count -gt 0) { $curlArgs += $additionalForm }
+
+    $response = & curl.exe @curlArgs
 
     if ($LASTEXITCODE -ne 0) {
         throw "Upload failed."

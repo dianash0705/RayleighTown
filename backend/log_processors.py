@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -24,6 +25,46 @@ def _system_time_to_epoch_ms(system_time_text: str) -> int:
         dt = dt.replace(tzinfo=timezone.utc)
 
     return int(dt.timestamp() * 1000)
+
+
+def _json_time_to_epoch_ms(time_text: str) -> int:
+    return _system_time_to_epoch_ms(time_text)
+
+
+def _extract_json_events(log_path: Path, event_id_whitelist):
+    events = []
+    with log_path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            native_event_id_value = record.get("EventID")
+            try:
+                native_event_id = int(native_event_id_value)
+            except (TypeError, ValueError):
+                continue
+
+            if event_id_whitelist is not None and native_event_id not in event_id_whitelist:
+                continue
+
+            time_text = record.get("TimeCreated") or record.get("@timestamp") or record.get("UtcTime")
+            if not time_text:
+                continue
+
+            try:
+                timestamp_ms = _json_time_to_epoch_ms(str(time_text))
+            except ValueError:
+                continue
+
+            events.append((timestamp_ms, native_event_id))
+
+    return events
 
 
 def extract_windows_evtx_events(log_path: Path, event_id_whitelist):
@@ -60,7 +101,7 @@ def extract_windows_evtx_events(log_path: Path, event_id_whitelist):
         except ValueError:
             continue
 
-        if native_event_id not in event_id_whitelist:
+        if event_id_whitelist is not None and native_event_id not in event_id_whitelist:
             continue
 
         time_node = root.find("./e:System/e:TimeCreated", namespaces=EVENT_XML_NAMESPACE)
@@ -79,3 +120,15 @@ def extract_windows_evtx_events(log_path: Path, event_id_whitelist):
         events.append((timestamp_ms, native_event_id))
 
     return events
+
+
+def extract_windows_json_events(log_path: Path, event_id_whitelist):
+    return _extract_json_events(log_path, event_id_whitelist)
+
+
+def extract_windows_events(log_path: Path, event_id_whitelist):
+    suffix = log_path.suffix.lower()
+    if suffix == ".json":
+        return extract_windows_json_events(log_path, event_id_whitelist)
+
+    return extract_windows_evtx_events(log_path, event_id_whitelist)

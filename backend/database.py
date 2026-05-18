@@ -159,11 +159,12 @@ def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
     return len(alerts)
 
 
-def recompute_alerts_for_endpoint(endpoint_id: str, plot: bool = False) -> int:
+def recompute_alerts_for_endpoint(endpoint_id: str, method: str = "fourier", plot: bool = False) -> int:
     return run_brain_for_endpoint(
         endpoint_id=endpoint_id,
         fetch_events=fetch_events_for_endpoint,
         publish_alerts=replace_alerts_for_endpoint,
+        method=method,
         plot=plot,
     )
 
@@ -173,10 +174,22 @@ def fetch_alerts_for_endpoint(endpoint_id: str):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT alertID, endpointID, tsBegin, tsEnd, periodTs, confidence
-        FROM alerts
-        WHERE endpointID = ?
-        ORDER BY confidence DESC, tsBegin DESC
+        SELECT
+            a.alertID,
+            a.endpointID,
+            a.tsBegin,
+            a.tsEnd,
+            a.periodTs,
+            a.confidence,
+            MIN(l.nativeEventID) AS nativeEventID
+        FROM alerts a
+        LEFT JOIN eventAlertMap m ON m.alertID = a.alertID
+        LEFT JOIN logs l
+            ON l.endpointID = a.endpointID
+            AND l.internalEventID = m.eventID
+        WHERE a.endpointID = ?
+        GROUP BY a.alertID, a.endpointID, a.tsBegin, a.tsEnd, a.periodTs, a.confidence
+        ORDER BY a.confidence DESC, a.tsBegin DESC
         """,
         (endpoint_id,),
     )
@@ -191,6 +204,7 @@ def fetch_alerts_for_endpoint(endpoint_id: str):
             "tsEnd": row[3],
             "periodTs": row[4],
             "confidence": row[5],
+            "nativeEventID": row[6],
         }
         for row in rows
     ]
