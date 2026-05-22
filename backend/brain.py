@@ -10,6 +10,7 @@ from fourier import (
     plot_fourier_points,
     filter_by_snr,
     get_median_value,
+    filter_by_harmony,
 )
 
 MIN_EVENTS_FOR_ALERT = 4
@@ -18,7 +19,8 @@ UNKNOWN_CONFIDENCE = 0
 SUPPRESSION_RADIUS_MS = 500
 TOP_PERCENT = 0.10
 SNR_THRESHOLD = 3.0
-
+HARMONY_THRESHOLD = 0.8
+HARMONY_PEAK_COUNT = 2
 
 @dataclass(frozen=True)
 class EventRecord:
@@ -105,22 +107,22 @@ def build_fourier_alert_from_sorted_timestamps_ms(
 
     local_max_indices = finding_max(magnitudes)
     local_max_points = [points[index] for index in local_max_indices]
-    if not local_max_points:
-        return None
+    # if not local_max_points:
+    #     return None
 
     suppressed_local_max_points = local_max_suppression(
         radius=SUPPRESSION_RADIUS_MS,
         local_maxs=local_max_points,
     )
-    if not suppressed_local_max_points:
-        return None
+    # if not suppressed_local_max_points:
+    #     return None
 
     top_percent_points = filter_top_percent(
         suppressed_local_max_points,
         top_percent=TOP_PERCENT,
     )
-    if not top_percent_points:
-        return None
+    # if not top_percent_points:
+    #     return None
 
     top_percent_points = suppressed_local_max_points
     high_snr_points = filter_by_snr(
@@ -128,6 +130,14 @@ def build_fourier_alert_from_sorted_timestamps_ms(
         median=median,
         mad=mad,
         min_snr=SNR_THRESHOLD,
+    )
+
+    harmonic_points = filter_by_harmony(
+        high_snr_points,
+        points,
+        threshold=HARMONY_THRESHOLD,
+        required_peak_count=HARMONY_PEAK_COUNT,
+        median=median,
     )
 
     # Generate a graph of the transform and mark important points when requested.
@@ -139,6 +149,7 @@ def build_fourier_alert_from_sorted_timestamps_ms(
                 magnitudes,
                 top_percent_points=top_percent_points,
                 high_snr_points=high_snr_points,
+                harmonic_points=harmonic_points,
                 median=median,
                 mad=mad,
                 snr_threshold=SNR_THRESHOLD,
@@ -149,7 +160,7 @@ def build_fourier_alert_from_sorted_timestamps_ms(
             plot_path = None
 
     alerts = []
-    for point in high_snr_points:
+    for point in harmonic_points:
         confidence = max(0, min(100, int(round(point[1] * 100))))
         alerts.append(
             AlertCore(

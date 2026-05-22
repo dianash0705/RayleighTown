@@ -8,7 +8,12 @@ WINDOWS_SECURITY_EVENT_NAMES = {
     4698: "Scheduled Task Created/Updated",
     4702: "Scheduled Task Created/Updated",
     4624: "Successful Logon",
+    4625: "Failed Logon",
+    4720: "User Account Created",
+    4726: "User Account Deleted",
     4703: "Token Right Adjusted",
+    4946: "Windows Firewall Setting Changed",
+    4947: "Windows Firewall Rule Changed",
 }
 
 # Sysmon events commonly present in the JSON sample

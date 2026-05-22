@@ -171,7 +171,7 @@
           <th>Endpoint</th>
           <th>Start (ms)</th>
           <th>End (ms)</th>
-          <th>Period (ms)</th>
+          <th>Period</th>
           <th>Confidence</th>
         </tr>
       </thead>
@@ -195,6 +195,31 @@
       return Math.round(number).toLocaleString();
     }
 
+    function formatPeriod(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number < 0) {
+        return value;
+      }
+
+      const units = [
+        { label: "day", ms: 24 * 60 * 60 * 1000 },
+        { label: "hour", ms: 60 * 60 * 1000 },
+        { label: "minute", ms: 60 * 1000 },
+        { label: "second", ms: 1000 },
+      ];
+
+      for (const unit of units) {
+        if (number >= unit.ms) {
+          const scaled = number / unit.ms;
+          const rounded = scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1);
+          const suffix = Number(rounded) === 1 ? unit.label : unit.label + "s";
+          return rounded + " " + suffix;
+        }
+      }
+
+      return Math.round(number).toLocaleString() + " ms";
+    }
+
     function renderRows(alerts) {
       tbody.innerHTML = "";
       for (const alert of alerts) {
@@ -205,7 +230,7 @@
           "<td>" + alert.endpointID + "</td>" +
           "<td>" + formatMs(alert.tsBegin) + "</td>" +
           "<td>" + formatMs(alert.tsEnd) + "</td>" +
-          "<td>" + formatMs(alert.periodTs) + "</td>" +
+          "<td>" + formatPeriod(alert.periodTs) + "</td>" +
           "<td>" + alert.confidence + "</td>";
         tbody.appendChild(tr);
       }

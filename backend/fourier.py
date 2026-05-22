@@ -12,8 +12,8 @@ except ImportError:  # Keep function usable even if tqdm is not installed.
 
 RADIUS = 15_000
 PERCENTILE = 0.10
-SMALLEST_PERIOD_MS = 1_100 # in milliseconds, needs to be greater than the expected JITTER
-SMALLEST_APPEARANCE_COUNT = 7 # idk once a week
+SMALLEST_PERIOD_MS = 2_000 # in milliseconds, needs to be greater than the expected JITTER
+SMALLEST_APPEARANCE_COUNT = 4 # idk once a week
 NUMBER_OF_DIFFERENT_PERIODS = 300
 
 RANDOM_SEED = 7
@@ -44,7 +44,44 @@ def filter_by_snr(points: list[tuple[float, float]], median: float, mad: float, 
 
     return [point for point, snr in snr_values if snr >= min_snr]
 
-def get_candidate_periods_ms(time_range_ms: float) -> list[float]:
+def filter_by_harmony(points: list[tuple[float, float]], all_points: list[tuple[float, float]], threshold: float, required_peak_count: int, median: float) -> list[tuple[float, float]]:
+    if not points:
+        return []
+
+    all_xs = [p[0] for p in all_points]
+    first_x = all_xs[0]
+    all_ys = [p[1] for p in all_points]
+
+    harmonic_points = []
+    points_x_set = set(p[0] for p in points)
+    for point in points:
+        period = point[0]
+        magnitude = point[1] - median
+
+        is_valid = True
+        for multiplier in range(2, required_peak_count + 2):
+            required_peak_height = magnitude / multiplier
+            harmonic_period = period / multiplier
+            if harmonic_period < first_x:
+                break
+            closest_index = min(range(len(all_xs)), key=lambda i: abs(all_xs[i] - harmonic_period))
+            # closest_y = all_ys[closest_index]
+            # closest_magnitude = closest_y - median
+
+            # if not(closest_magnitude >= required_peak_height * threshold):
+            #     is_valid = False
+            #     break
+            closest_x = all_xs[closest_index]
+            if closest_x not in points_x_set:
+                is_valid = False
+                break
+
+        if is_valid:
+            harmonic_points.append(point)
+
+    return harmonic_points
+
+def get_candidate_periods_ms2(time_range_ms: float) -> list[float]:
     largest_period_ms = time_range_ms / SMALLEST_APPEARANCE_COUNT
     if largest_period_ms <= SMALLEST_PERIOD_MS:
         raise ValueError("time range is too small to build candidate periods")
@@ -55,6 +92,34 @@ def get_candidate_periods_ms(time_range_ms: float) -> list[float]:
         for n in range(NUMBER_OF_DIFFERENT_PERIODS)
     ]
     return periods_ms
+
+
+def get_candidate_periods_ms(time_range_ms: float) -> list[float]:
+    largest_period_ms = time_range_ms / SMALLEST_APPEARANCE_COUNT
+    if largest_period_ms <= SMALLEST_PERIOD_MS:
+        raise ValueError("time range is too small to build candidate periods")
+
+    def append_range(periods: list[float], start_ms: int, end_ms: float, step_ms: int) -> None:
+        current_ms = max(start_ms, SMALLEST_PERIOD_MS)
+        while current_ms <= end_ms:
+            periods.append(float(current_ms))
+            current_ms += step_ms
+
+    periods_ms: list[float] = []
+    one_minute_ms = 60_000
+    ten_minutes_ms = 600_000
+    one_hour_ms = 3_600_000
+    two_hours_ms = 3_600_000
+    two_days_ms = 172_800_000
+
+    append_range(periods_ms, SMALLEST_PERIOD_MS, min(largest_period_ms, one_minute_ms), 500)
+    append_range(periods_ms, one_minute_ms, min(largest_period_ms, ten_minutes_ms), 1_000)
+    append_range(periods_ms, ten_minutes_ms, min(largest_period_ms, two_hours_ms), 10_000)
+    append_range(periods_ms, two_hours_ms, min(largest_period_ms, two_days_ms), ten_minutes_ms)
+    append_range(periods_ms, two_days_ms, largest_period_ms, one_hour_ms)
+
+    unique_periods_ms = sorted(set(periods_ms))
+    return unique_periods_ms
 
 def fourier_transform(timestamps: list[float], show_progress: bool = False):
     if len(timestamps) < 2:
@@ -243,6 +308,7 @@ def test():
 def plot_fourier_points(periods: list[float], magnitudes: list[float],
                         top_percent_points: list[tuple[float, float]] | None = None,
                         high_snr_points: list[tuple[float, float]] | None = None,
+                        harmonic_points: list[tuple[float, float]] | None = None,
                         median: float | None = None,
                         mad: float | None = None,
                         snr_threshold: float | None = None,
@@ -254,6 +320,7 @@ def plot_fourier_points(periods: list[float], magnitudes: list[float],
     Highlights:
     - top_percent_points: the top-percent strongest maxima after suppression
     - high_snr_points: the strongest points that also clear the SNR filter
+    - harmonic_points: points that passed the harmonic filter (multiples present)
     - median / SNR lines: horizontal reference lines for the current filter basis
 
     Returns the path to the saved PNG file.
@@ -286,6 +353,7 @@ def plot_fourier_points(periods: list[float], magnitudes: list[float],
 
     _scatter(top_percent_points, facecolors='none', edgecolors='orange', marker='o', s=220, linewidths=2.4, label='top percentile after suppression')
     _scatter(high_snr_points, color='limegreen', marker='D', s=70, alpha=0.9, edgecolors='black', linewidths=0.6, label='high SNR points')
+    _scatter(harmonic_points, color='purple', marker='*', s=140, alpha=0.9, edgecolors='black', linewidths=0.8, label='harmonic points')
 
     if median is not None:
         plt.axhline(median, color='slateblue', linestyle='-', linewidth=1.8, label='median')
@@ -306,5 +374,6 @@ def plot_fourier_points(periods: list[float], magnitudes: list[float],
     plt.legend()
     plt.tight_layout()
     plt.savefig(out_path)
+    plt.show()
     plt.close()
     return out_path
