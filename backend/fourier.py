@@ -1,6 +1,8 @@
 import math
 import random
 from datetime import datetime
+from dataclasses import dataclass
+from bisect import bisect_left
 
 import numpy as np
 
@@ -12,6 +14,13 @@ SMALLEST_PERIOD_MS = 2_000 # in milliseconds, needs to be greater than the expec
 SMALLEST_APPEARANCE_COUNT = 4 # idk once a week
 NUMBER_OF_DIFFERENT_PERIODS = 300
 MAX_CANDIDATE_PERIOD_MS = None
+
+
+@dataclass(frozen=True)
+class CandidatePeriodGroup:
+    name: str
+    window_size_ms: int
+    periods_ms: list[float]
 
 RANDOM_SEED = 7
 NOISE_EVENT_COUNT = 220
@@ -41,16 +50,40 @@ def filter_by_snr(points: list[tuple[float, float]], median: float, mad: float, 
 
     return [point for point, snr in snr_values if snr >= min_snr]
 
+
+def _estimate_harmonic_support(all_points: list[tuple[float, float]], target_period: float, median: float) -> float:
+    if not all_points:
+        return 0.0
+
+    if target_period <= all_points[0][0]:
+        return max(0.0, all_points[0][1] - median)
+    if target_period >= all_points[-1][0]:
+        return max(0.0, all_points[-1][1] - median)
+
+    periods = [point[0] for point in all_points]
+    right_index = bisect_left(periods, target_period)
+    left_index = right_index - 1
+
+    left_period, left_magnitude = all_points[left_index]
+    right_period, right_magnitude = all_points[right_index]
+
+    if target_period == left_period:
+        return max(0.0, left_magnitude - median)
+    if target_period == right_period:
+        return max(0.0, right_magnitude - median)
+
+    left_support = max(0.0, left_magnitude - median)
+    right_support = max(0.0, right_magnitude - median)
+    return left_support + right_support
+
 def filter_by_harmony(points: list[tuple[float, float]], all_points: list[tuple[float, float]], threshold: float, required_peak_count: int, median: float) -> list[tuple[float, float]]:
     if not points:
         return []
 
     all_xs = [p[0] for p in all_points]
     first_x = all_xs[0]
-    all_ys = [p[1] for p in all_points]
 
     harmonic_points = []
-    points_x_set = set(p[0] for p in points)
     for point in points:
         period = point[0]
         magnitude = point[1] - median
@@ -61,15 +94,8 @@ def filter_by_harmony(points: list[tuple[float, float]], all_points: list[tuple[
             harmonic_period = period / multiplier
             if harmonic_period < first_x:
                 break
-            closest_index = min(range(len(all_xs)), key=lambda i: abs(all_xs[i] - harmonic_period))
-            # closest_y = all_ys[closest_index]
-            # closest_magnitude = closest_y - median
-
-            # if not(closest_magnitude >= required_peak_height * threshold):
-            #     is_valid = False
-            #     break
-            closest_x = all_xs[closest_index]
-            if closest_x not in points_x_set:
+            harmonic_support = _estimate_harmonic_support(all_points, harmonic_period, median)
+            if not (harmonic_support >= required_peak_height * threshold):
                 is_valid = False
                 break
 
@@ -91,7 +117,7 @@ def get_candidate_periods_ms2(time_range_ms: float) -> list[float]:
     return periods_ms
 
 
-def get_candidate_periods_ms(time_range_ms: float) -> list[float]:
+def get_candidate_period_groups_ms(time_range_ms: float) -> list[CandidatePeriodGroup]:
     largest_period_ms = time_range_ms / SMALLEST_APPEARANCE_COUNT
     if MAX_CANDIDATE_PERIOD_MS is not None:
         largest_period_ms = min(largest_period_ms, MAX_CANDIDATE_PERIOD_MS)
@@ -105,28 +131,47 @@ def get_candidate_periods_ms(time_range_ms: float) -> list[float]:
             periods.append(float(current_ms))
             current_ms += step_ms
 
-    periods_ms: list[float] = []
-    one_minute_ms = 60_000
-    ten_minutes_ms = 600_000
-    one_hour_ms = 3_600_000
-    two_hours_ms = 3_600_000
-    two_days_ms = 172_800_000
+    groups: list[CandidatePeriodGroup] = []
 
-    append_range(periods_ms, SMALLEST_PERIOD_MS, min(largest_period_ms, one_minute_ms), 500)
-    append_range(periods_ms, one_minute_ms, min(largest_period_ms, ten_minutes_ms), 1_000)
-    append_range(periods_ms, ten_minutes_ms, min(largest_period_ms, two_hours_ms), 10_000)
-    append_range(periods_ms, two_hours_ms, min(largest_period_ms, two_days_ms), ten_minutes_ms)
-    append_range(periods_ms, two_days_ms, largest_period_ms, one_hour_ms)
+    short_periods_ms: list[float] = []
+    append_range(short_periods_ms, 2_000, min(largest_period_ms, 60_000), 1_000)
+    if short_periods_ms:
+        groups.append(CandidatePeriodGroup(name="short", window_size_ms=15 * 60_000, periods_ms=short_periods_ms))
 
-    unique_periods_ms = sorted(set(periods_ms))
+    medium_periods_ms: list[float] = []
+    append_range(medium_periods_ms, 90_000, min(largest_period_ms, 1_800_000), 30_000)
+    if medium_periods_ms:
+        groups.append(CandidatePeriodGroup(name="medium", window_size_ms=6 * 60 * 60_000, periods_ms=medium_periods_ms))
+
+    long_periods_ms: list[float] = []
+    append_range(long_periods_ms, 35 * 60_000, min(largest_period_ms, 120 * 60_000), 5 * 60_000)
+    if long_periods_ms:
+        groups.append(CandidatePeriodGroup(name="long", window_size_ms=24 * 60 * 60_000, periods_ms=long_periods_ms))
+
+    very_long_periods_ms: list[float] = []
+    append_range(very_long_periods_ms, int(2.5 * 60 * 60_000), min(largest_period_ms, 24 * 60 * 60_000), 30 * 60_000)
+    if very_long_periods_ms:
+        groups.append(CandidatePeriodGroup(name="very_long", window_size_ms=7 * 24 * 60 * 60_000, periods_ms=very_long_periods_ms))
+
+    return groups
+
+
+def get_candidate_periods_ms(time_range_ms: float) -> list[float]:
+    groups = get_candidate_period_groups_ms(time_range_ms)
+    unique_periods_ms = sorted({period for group in groups for period in group.periods_ms})
     return unique_periods_ms
 
-def fourier_transform(timestamps: list[float], show_progress: bool = False):
+
+def fourier_transform(
+    timestamps: list[float],
+    period_candidates_ms: list[float] | None = None,
+    show_progress: bool = False,
+):
     if len(timestamps) < 2:
         raise ValueError("timestamps must contain at least two values")
 
     time_range_ms = timestamps[-1] - timestamps[0]
-    periods_ms = get_candidate_periods_ms(time_range_ms)
+    periods_ms = period_candidates_ms if period_candidates_ms is not None else get_candidate_periods_ms(time_range_ms)
 
     point_xs = []
     point_ys = []

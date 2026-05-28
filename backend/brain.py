@@ -1,6 +1,7 @@
 import math
 from dataclasses import dataclass
 from typing import Callable, Iterable, List
+from bisect import bisect_left, bisect_right
 
 from tqdm.auto import tqdm
 
@@ -13,6 +14,7 @@ from fourier import (
     filter_by_snr,
     get_median_value,
     filter_by_harmony,
+    get_candidate_period_groups_ms,
 )
 
 MIN_EVENTS_FOR_ALERT = 4
@@ -23,6 +25,7 @@ TOP_PERCENT = 0.10
 SNR_THRESHOLD = 3.0
 HARMONY_THRESHOLD = 0.8
 HARMONY_PEAK_COUNT = 2
+WINDOW_OVERLAP_RATIO = 0.5
 
 @dataclass(frozen=True)
 class EventRecord:
@@ -59,6 +62,7 @@ AlertBuilderFn = Callable[[list[int], "AlertBuildContext"], AlertCore | None]
 class AlertBuildContext:
     endpoint_id: str
     native_event_id: int
+    period_candidates_ms: list[float] | None = None
     plot: bool = False
     show_progress: bool = False
 
@@ -85,6 +89,87 @@ def _group_logs_by_native_event(events: Iterable[EventRecord]):
     return grouped
 
 
+def _build_window_ranges(start_ms: int, end_ms: int, window_size_ms: int) -> list[tuple[int, int]]:
+    if start_ms > end_ms:
+        return []
+
+    if start_ms == end_ms or (end_ms - start_ms) <= window_size_ms:
+        return [(start_ms, end_ms)]
+
+    step_ms = max(1, int(window_size_ms * (1 - WINDOW_OVERLAP_RATIO)))
+    window_ranges: list[tuple[int, int]] = []
+
+    current_start = start_ms
+    while current_start + window_size_ms <= end_ms:
+        window_ranges.append((current_start, current_start + window_size_ms))
+        current_start += step_ms
+
+    final_start = max(start_ms, end_ms - window_size_ms)
+    if not window_ranges or window_ranges[-1][0] != final_start:
+        window_ranges.append((final_start, end_ms))
+
+    return window_ranges
+
+
+def _build_group_alerts_from_sorted_timestamps_ms(
+    sorted_timestamps_ms: list[int],
+    context: AlertBuildContext,
+    window_size_ms: int,
+) -> List[AlertCore] | None:
+    if len(sorted_timestamps_ms) < MIN_EVENTS_FOR_ALERT:
+        return None
+
+    alerts: list[AlertCore] = []
+    window_ranges = _build_window_ranges(sorted_timestamps_ms[0], sorted_timestamps_ms[-1], window_size_ms)
+
+    for window_start_ms, window_end_ms in window_ranges:
+        left_index = bisect_left(sorted_timestamps_ms, window_start_ms)
+        right_index = bisect_right(sorted_timestamps_ms, window_end_ms)
+        window_timestamps_ms = sorted_timestamps_ms[left_index:right_index]
+
+        if len(window_timestamps_ms) < MIN_EVENTS_FOR_ALERT:
+            continue
+
+        alert_cores = build_fourier_alert_from_sorted_timestamps_ms(window_timestamps_ms, context)
+        if not alert_cores:
+            continue
+
+        alerts.extend(alert_cores)
+
+    return alerts or None
+
+
+def _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
+    sorted_timestamps_ms: list[int],
+    context: AlertBuildContext,
+) -> List[AlertCore] | None:
+    if len(sorted_timestamps_ms) < MIN_EVENTS_FOR_ALERT:
+        return None
+
+    try:
+        candidate_groups = get_candidate_period_groups_ms(sorted_timestamps_ms[-1] - sorted_timestamps_ms[0])
+    except ValueError:
+        return None
+
+    alerts: list[AlertCore] = []
+    for group in candidate_groups:
+        grouped_alert_cores = _build_group_alerts_from_sorted_timestamps_ms(
+            sorted_timestamps_ms,
+            AlertBuildContext(
+                endpoint_id=context.endpoint_id,
+                native_event_id=context.native_event_id,
+                period_candidates_ms=group.periods_ms,
+                plot=context.plot,
+                show_progress=context.show_progress,
+            ),
+            window_size_ms=group.window_size_ms,
+        )
+        if grouped_alert_cores:
+            alerts.extend(grouped_alert_cores)
+
+    return alerts or None
+
+
 def build_fourier_alert_from_sorted_timestamps_ms(
     sorted_timestamps_ms: list[int],
     context: AlertBuildContext,
@@ -94,6 +179,7 @@ def build_fourier_alert_from_sorted_timestamps_ms(
 
     period_candidates_ms, magnitudes = fourier_transform(
         sorted_timestamps_ms,
+        period_candidates_ms=context.period_candidates_ms,
         show_progress=context.show_progress,
     )
     if not period_candidates_ms or not magnitudes:
@@ -218,6 +304,7 @@ def build_alerts_from_sorted_timestamps_ms(
     sorted_timestamps_ms: list[int],
     endpoint_id: str,
     native_event_id: int,
+    period_candidates_ms: list[float] | None = None,
     method: str = "fourier",
     plot: bool = False,
     show_progress: bool = False,
@@ -226,9 +313,13 @@ def build_alerts_from_sorted_timestamps_ms(
     context = AlertBuildContext(
         endpoint_id=endpoint_id,
         native_event_id=native_event_id,
+        period_candidates_ms=period_candidates_ms,
         plot=plot,
         show_progress=show_progress,
     )
+    if method == "fourier":
+        return _build_windowed_fourier_alerts_from_sorted_timestamps_ms(sorted_timestamps_ms, context)
+
     return builder(sorted_timestamps_ms, context)
 
 
@@ -241,6 +332,7 @@ def build_alerts_for_endpoint(
 ) -> list[AlertRecord]:
     grouped_by_native_event = _group_logs_by_native_event(events)
     alerts = []
+    seen_alert_keys: set[tuple] = set()
 
     native_event_items = grouped_by_native_event.items()
     if show_progress:
@@ -265,8 +357,7 @@ def build_alerts_for_endpoint(
             continue
 
         for alert_core in alert_cores:
-            alerts.append(
-            AlertRecord(
+            alert_record = AlertRecord(
                 endpoint_id=endpoint_id,
                 native_event_id=native_event_id,
                 event_ids=[event.internal_event_id for event in native_events],
@@ -275,7 +366,19 @@ def build_alerts_for_endpoint(
                 period_ts=alert_core.period_ts,
                 confidence=alert_core.confidence,
             )
-        )
+            alert_key = (
+                alert_record.endpoint_id,
+                alert_record.native_event_id,
+                tuple(alert_record.event_ids),
+                alert_record.ts_begin,
+                alert_record.ts_end,
+                alert_record.period_ts,
+                alert_record.confidence,
+            )
+            if alert_key in seen_alert_keys:
+                continue
+            seen_alert_keys.add(alert_key)
+            alerts.append(alert_record)
 
     return alerts
 
