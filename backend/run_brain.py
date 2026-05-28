@@ -19,5 +19,10 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    created_alerts = recompute_alerts_for_endpoint(args.endpointID, method=args.method, plot=args.plot)
+    created_alerts = recompute_alerts_for_endpoint(
+        args.endpointID,
+        method=args.method,
+        plot=args.plot,
+        show_progress=True,
+    )
     print(f"Brain run complete for endpointID={args.endpointID}. Alerts created: {created_alerts}")

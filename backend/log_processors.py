@@ -31,6 +31,13 @@ def _json_time_to_epoch_ms(time_text: str) -> int:
     return _system_time_to_epoch_ms(time_text)
 
 
+def _extract_json_payload(record):
+    payload = record.get("result")
+    if isinstance(payload, dict):
+        return payload
+    return record
+
+
 def _extract_json_events(log_path: Path, event_id_whitelist):
     events = []
     with log_path.open("r", encoding="utf-8") as handle:
@@ -44,7 +51,11 @@ def _extract_json_events(log_path: Path, event_id_whitelist):
             except json.JSONDecodeError:
                 continue
 
-            native_event_id_value = record.get("EventID")
+            payload = _extract_json_payload(record)
+
+            native_event_id_value = payload.get("EventID")
+            if native_event_id_value is None:
+                native_event_id_value = payload.get("EventCode")
             try:
                 native_event_id = int(native_event_id_value)
             except (TypeError, ValueError):
@@ -53,7 +64,14 @@ def _extract_json_events(log_path: Path, event_id_whitelist):
             if event_id_whitelist is not None and native_event_id not in event_id_whitelist:
                 continue
 
-            time_text = record.get("TimeCreated") or record.get("@timestamp") or record.get("UtcTime")
+            time_text = (
+                payload.get("TimeCreated")
+                or payload.get("@timestamp")
+                or payload.get("UtcTime")
+                or record.get("TimeCreated")
+                or record.get("@timestamp")
+                or record.get("UtcTime")
+            )
             if not time_text:
                 continue
 

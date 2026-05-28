@@ -4,17 +4,14 @@ from datetime import datetime
 
 import numpy as np
 
-try:
-    from tqdm.auto import tqdm
-except ImportError:  # Keep function usable even if tqdm is not installed.
-    def tqdm(iterable, **kwargs):
-        return iterable
+from tqdm.auto import tqdm
 
 RADIUS = 15_000
 PERCENTILE = 0.10
 SMALLEST_PERIOD_MS = 2_000 # in milliseconds, needs to be greater than the expected JITTER
 SMALLEST_APPEARANCE_COUNT = 4 # idk once a week
 NUMBER_OF_DIFFERENT_PERIODS = 300
+MAX_CANDIDATE_PERIOD_MS = None
 
 RANDOM_SEED = 7
 NOISE_EVENT_COUNT = 220
@@ -96,6 +93,9 @@ def get_candidate_periods_ms2(time_range_ms: float) -> list[float]:
 
 def get_candidate_periods_ms(time_range_ms: float) -> list[float]:
     largest_period_ms = time_range_ms / SMALLEST_APPEARANCE_COUNT
+    if MAX_CANDIDATE_PERIOD_MS is not None:
+        largest_period_ms = min(largest_period_ms, MAX_CANDIDATE_PERIOD_MS)
+
     if largest_period_ms <= SMALLEST_PERIOD_MS:
         raise ValueError("time range is too small to build candidate periods")
 

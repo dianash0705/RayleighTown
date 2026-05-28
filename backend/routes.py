@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from uuid import uuid4
 
 from flask import jsonify, request
@@ -7,6 +8,76 @@ from werkzeug.utils import secure_filename
 from config import UPLOAD_DIR
 from database import fetch_alerts_for_endpoint, insert_events
 from log_registry import LOG_TYPE_CONFIG, LOG_SOURCE_MAP
+
+
+def _source_name_from_json_file(log_path):
+    try:
+        with log_path.open("r", encoding="utf-8") as handle:
+            first_line = handle.readline().strip()
+    except OSError:
+        return None
+
+    if not first_line:
+        return None
+
+    try:
+        record = json.loads(first_line)
+    except json.JSONDecodeError:
+        return None
+
+    def _normalize_source(value):
+        value = str(value)
+        lowered = value.lower()
+        if "sysmon" in lowered:
+            return "Microsoft-Windows-Sysmon"
+        if "security" in lowered:
+            return "windows_security"
+        return value
+
+    def _lookup_source(payload):
+        if not isinstance(payload, dict):
+            return None
+
+        for field in ("SourceName", "source", "Source"):
+            value = payload.get(field)
+            if value:
+                return _normalize_source(value)
+
+        for field in ("EventChannel", "Channel", "EventLogName"):
+            value = payload.get(field)
+            if not value:
+                continue
+            return _normalize_source(value)
+
+        return None
+
+    source_name = _lookup_source(record.get("result"))
+    if source_name:
+        return source_name
+
+    return _lookup_source(record)
+
+
+def _log_id_from_source_name(source_name):
+    if not source_name:
+        return None
+
+    source_name_lower = source_name.lower()
+    for key, configured_source_name in LOG_SOURCE_MAP.items():
+        configured_lower = configured_source_name.lower()
+        if (
+            configured_lower == source_name_lower
+            or configured_lower in source_name_lower
+            or source_name_lower in configured_lower
+        ):
+            return int(key)
+
+    if "sysmon" in source_name_lower:
+        return 1
+    if "security" in source_name_lower:
+        return 0
+
+    return 999
 
 
 def register_routes(app):
@@ -41,11 +112,7 @@ def register_routes(app):
         # map the source name back to a configured logID and override the supplied logID.
         source_name = request.form.get("sourceName")
         if source_name:
-            mapped = None
-            for k, v in LOG_SOURCE_MAP.items():
-                if v == source_name:
-                    mapped = k
-                    break
+            mapped = _log_id_from_source_name(source_name)
             if mapped is not None:
                 log_id = int(mapped)
 
@@ -65,6 +132,20 @@ def register_routes(app):
         saved_name = f"{stamp}_{uuid4().hex}_{safe_name}"
         destination = UPLOAD_DIR / saved_name
         log_file.save(destination)
+
+        if log_id == 0 and destination.suffix.lower() == ".json":
+            inferred_source_name = _source_name_from_json_file(destination)
+            if inferred_source_name:
+                source_name = inferred_source_name
+                mapped = _log_id_from_source_name(inferred_source_name)
+                if mapped is not None:
+                    log_id = int(mapped)
+            if log_id == 0:
+                log_id = 999
+
+        log_config = LOG_TYPE_CONFIG.get(log_id)
+        if log_config is None:
+            return jsonify({"error": f"Unsupported logID: {log_id}."}), 400
 
         try:
             extractor = log_config["extractor"]

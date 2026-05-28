@@ -8,6 +8,50 @@ param(
 $ErrorActionPreference = "Stop"
 $logID = "0"
 
+function Get-SourceNameFromJsonLine {
+    param(
+        [string]$Line
+    )
+
+    try {
+        $record = $Line | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    }
+    catch {
+        return $null
+    }
+
+    if ($null -eq $record) {
+        return $null
+    }
+
+    $payload = $record['result']
+    if ($payload) {
+        foreach ($field in @('SourceName', 'source', 'Source')) {
+            if ($payload.ContainsKey($field)) {
+                $value = $payload[$field]
+                if ($value) { return [string]$value }
+            }
+        }
+
+        foreach ($field in @('EventChannel', 'Channel', 'EventLogName')) {
+            if ($payload.ContainsKey($field)) {
+                $value = [string]$payload[$field]
+                if ($value -match 'Sysmon') { return 'Microsoft-Windows-Sysmon' }
+                if ($value -match 'Security') { return 'windows_security' }
+            }
+        }
+    }
+
+    foreach ($field in @('SourceName', 'source', 'Source')) {
+        if ($record.ContainsKey($field)) {
+            $value = $record[$field]
+            if ($value) { return [string]$value }
+        }
+    }
+
+    return $null
+}
+
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 if ($CustomLogPath) {
@@ -37,12 +81,8 @@ try {
     if ([io.path]::GetExtension($logFilePath).ToLower() -eq '.json') {
         try {
             $firstLine = Get-Content -LiteralPath $logFilePath -TotalCount 1 -ErrorAction Stop
-            $maybeJson = $null
-            try { $maybeJson = $firstLine | ConvertFrom-Json -ErrorAction Stop } catch { $maybeJson = $null }
-            if ($maybeJson) {
-                $sourceName = $maybeJson.SourceName -or $maybeJson.source -or $maybeJson.Source -or $null
-                if ($sourceName) { $additionalForm += "-F"; $additionalForm += "sourceName=$sourceName" }
-            }
+            $sourceName = Get-SourceNameFromJsonLine -Line $firstLine
+            if ($sourceName) { $additionalForm += "-F"; $additionalForm += "sourceName=$sourceName" }
         }
         catch {
             # ignore JSON read errors and continue uploading

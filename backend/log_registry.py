@@ -19,6 +19,7 @@ WINDOWS_SECURITY_EVENT_NAMES = {
 # Sysmon events commonly present in the JSON sample
 SYSMON_EVENT_NAMES = {
     1: "Process Create",
+    3: "Network Connection",
     5: "Process Terminated",
     7: "Image Loaded",
     10: "Process Access",

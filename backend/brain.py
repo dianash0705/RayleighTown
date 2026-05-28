@@ -2,6 +2,8 @@ import math
 from dataclasses import dataclass
 from typing import Callable, Iterable, List
 
+from tqdm.auto import tqdm
+
 from fourier import (
     filter_top_percent,
     finding_max,
@@ -58,6 +60,7 @@ class AlertBuildContext:
     endpoint_id: str
     native_event_id: int
     plot: bool = False
+    show_progress: bool = False
 
 
 ALERT_BUILDERS: dict[str, AlertBuilderFn] = {}
@@ -91,7 +94,7 @@ def build_fourier_alert_from_sorted_timestamps_ms(
 
     period_candidates_ms, magnitudes = fourier_transform(
         sorted_timestamps_ms,
-        show_progress=True,
+        show_progress=context.show_progress,
     )
     if not period_candidates_ms or not magnitudes:
         return None
@@ -140,6 +143,43 @@ def build_fourier_alert_from_sorted_timestamps_ms(
         median=median,
     )
 
+    # # Prune sub-harmonic duplicates: if a large-period point has matching
+    # # smaller-period peaks at exact integer divisors (within tolerance),
+    # # remove the smaller / derived points so we report the canonical period.
+    # if harmonic_points:
+    #     pts = sorted(harmonic_points, key=lambda p: p[0], reverse=True)
+
+    #     changed = True
+    #     # Check divisors up to 6th harmonic (adjustable). Restart loop when a
+    #     # removal happens to ensure transitive relationships are cleaned.
+    #     while changed:
+    #         changed = False
+    #         for i, (base_period, _base_mag) in enumerate(pts):
+    #             for n in range(2, 7):
+    #                 target = base_period / n
+    #                 # relative tolerance: 2% or at least 1ms
+    #                 tol = max(1.0, target * 0.02)
+    #                 # search for a point near the target (exclude the base itself)
+    #                 found_index = None
+    #                 for j, (p_period, _p_mag) in enumerate(pts):
+    #                     if j == i:
+    #                         continue
+    #                     if abs(p_period - target) <= tol:
+    #                         found_index = j
+    #                         break
+
+    #                 if found_index is not None:
+    #                     # remove the derived (smaller) period so the base remains
+    #                     del pts[found_index]
+    #                     changed = True
+    #                     break
+    #             if changed:
+    #                 break
+
+    #     harmonic_points = sorted(pts, key=lambda p: p[0])
+    # else:
+    #     harmonic_points = []
+
     # Generate a graph of the transform and mark important points when requested.
     plot_path = None
     if context.plot:
@@ -180,12 +220,14 @@ def build_alerts_from_sorted_timestamps_ms(
     native_event_id: int,
     method: str = "fourier",
     plot: bool = False,
+    show_progress: bool = False,
 ) -> List[AlertCore] | None:
     builder = get_alert_builder(method)
     context = AlertBuildContext(
         endpoint_id=endpoint_id,
         native_event_id=native_event_id,
         plot=plot,
+        show_progress=show_progress,
     )
     return builder(sorted_timestamps_ms, context)
 
@@ -195,11 +237,20 @@ def build_alerts_for_endpoint(
     events: Iterable[EventRecord],
     method: str = "fourier",
     plot: bool = False,
+    show_progress: bool = False,
 ) -> list[AlertRecord]:
     grouped_by_native_event = _group_logs_by_native_event(events)
     alerts = []
 
-    for native_event_id, native_events in grouped_by_native_event.items():
+    native_event_items = grouped_by_native_event.items()
+    if show_progress:
+        native_event_items = tqdm(
+            native_event_items,
+            desc=f"Processing endpoint {endpoint_id}",
+            unit="event group",
+        )
+
+    for native_event_id, native_events in native_event_items:
         native_events = sorted(native_events, key=lambda item: item.timestamp_ms)
         sorted_timestamps_ms = [event.timestamp_ms for event in native_events]
         alert_cores = build_alerts_from_sorted_timestamps_ms(
@@ -208,6 +259,7 @@ def build_alerts_for_endpoint(
             native_event_id=native_event_id,
             method=method,
             plot=plot,
+            show_progress=show_progress,
         )
         if not alert_cores:
             continue
@@ -234,7 +286,14 @@ def run_brain_for_endpoint(
     publish_alerts: PublishAlertsFn,
     method: str = "fourier",
     plot: bool = False,
+    show_progress: bool = False,
 ) -> int:
     events = list(fetch_events(endpoint_id))
-    alerts = build_alerts_for_endpoint(endpoint_id, events, method=method, plot=plot)
+    alerts = build_alerts_for_endpoint(
+        endpoint_id,
+        events,
+        method=method,
+        plot=plot,
+        show_progress=show_progress,
+    )
     return publish_alerts(endpoint_id, alerts)
