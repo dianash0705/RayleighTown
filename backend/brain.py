@@ -48,6 +48,7 @@ class AlertRecord:
     ts_end: int = UNKNOWN_TIMESTAMP_MS
     period_ts: float = math.nan
     confidence: int = UNKNOWN_CONFIDENCE
+    phase: float = math.nan
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,61 @@ def _build_group_alerts_from_sorted_timestamps_ms(
     return alerts or None
 
 
+def _ranges_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
+    return start_a <= end_b and start_b <= end_a
+
+
+def _periods_match(period_a: float, period_b: float, tolerance_ratio: float = 0.05) -> bool:
+    if math.isnan(period_a) or math.isnan(period_b):
+        return False
+
+    scale = max(1.0, abs(period_a), abs(period_b))
+    return abs(period_a - period_b) <= (scale * tolerance_ratio)
+
+
+def _merge_alert_cores(left: AlertCore, right: AlertCore) -> AlertCore:
+    if right.confidence > left.confidence:
+        merged_period = right.period_ts
+        merged_phase = right.phase
+    else:
+        merged_period = left.period_ts
+        merged_phase = left.phase
+
+    return AlertCore(
+        ts_begin=min(left.ts_begin, right.ts_begin),
+        ts_end=max(left.ts_end, right.ts_end),
+        period_ts=merged_period,
+        confidence=max(left.confidence, right.confidence),
+        phase=merged_phase,
+    )
+
+
+def _merge_overlapping_alert_cores(alerts: list[AlertCore]) -> list[AlertCore]:
+    if not alerts:
+        return []
+
+    merged_alerts: list[AlertCore] = []
+    for alert_core in sorted(alerts, key=lambda alert: (alert.period_ts, alert.ts_begin, alert.ts_end)):
+        candidate = alert_core
+        index = 0
+        while index < len(merged_alerts):
+            existing_alert = merged_alerts[index]
+            if not _periods_match(existing_alert.period_ts, candidate.period_ts):
+                index += 1
+                continue
+
+            if not _ranges_overlap(existing_alert.ts_begin, existing_alert.ts_end, candidate.ts_begin, candidate.ts_end):
+                index += 1
+                continue
+
+            candidate = _merge_alert_cores(existing_alert, candidate)
+            merged_alerts.pop(index)
+
+        merged_alerts.append(candidate)
+
+    return sorted(merged_alerts, key=lambda alert: (alert.ts_begin, alert.ts_end, alert.period_ts))
+
+
 def _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
     sorted_timestamps_ms: list[int],
     context: AlertBuildContext,
@@ -176,43 +232,44 @@ def _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
     if not alerts:
         return None
 
-    if not GHOST_PEAK_SUPPRESSION_ENABLED:
-        return alerts
+    if GHOST_PEAK_SUPPRESSION_ENABLED:
+        def is_harmonic(base_period_ms: float, candidate_period_ms: float, tolerance_ratio: float = 0.05) -> bool:
+            if candidate_period_ms <= 0:
+                return False
 
-    def is_harmonic(base_period_ms: float, candidate_period_ms: float, tolerance_ratio: float = 0.05) -> bool:
-        if candidate_period_ms <= 0:
-            return False
+            ratio = base_period_ms / candidate_period_ms
+            nearest_multiplier = round(ratio)
+            if nearest_multiplier < 2:
+                return False
 
-        ratio = base_period_ms / candidate_period_ms
-        nearest_multiplier = round(ratio)
-        if nearest_multiplier < 2:
-            return False
+            return abs(ratio - nearest_multiplier) <= tolerance_ratio
 
-        return abs(ratio - nearest_multiplier) <= tolerance_ratio
+        filtered_alerts: list[AlertCore] = []
+        suppression_sources: list[AlertCore] = []
+        ordered_alerts = sorted(alerts, key=lambda alert_core: alert_core.period_ts, reverse=True)
 
-    filtered_alerts: list[AlertCore] = []
-    suppression_sources: list[AlertCore] = []
-    ordered_alerts = sorted(alerts, key=lambda alert_core: alert_core.period_ts, reverse=True)
+        for alert_core in ordered_alerts:
+            suppress_alert = False
 
-    for alert_core in ordered_alerts:
-        suppress_alert = False
+            for source_alert_core in suppression_sources:
+                if not is_harmonic(source_alert_core.period_ts, alert_core.period_ts):
+                    continue
 
-        for source_alert_core in suppression_sources:
-            if not is_harmonic(source_alert_core.period_ts, alert_core.period_ts):
-                continue
+                if (not PHASE_GHOST_SUPPRESSION_ENABLED) or (
+                    math.cos(alert_core.phase - source_alert_core.phase) >= PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD
+                ):
+                    suppress_alert = True
+                    break
 
-            if (not PHASE_GHOST_SUPPRESSION_ENABLED) or (
-                math.cos(alert_core.phase - source_alert_core.phase) >= PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD
-            ):
-                suppress_alert = True
-                break
+            suppression_sources.append(alert_core)
 
-        suppression_sources.append(alert_core)
+            if not suppress_alert:
+                filtered_alerts.append(alert_core)
 
-        if not suppress_alert:
-            filtered_alerts.append(alert_core)
+        alerts = filtered_alerts
 
-    return filtered_alerts or None
+    merged_alerts = _merge_overlapping_alert_cores(alerts)
+    return merged_alerts or None
 
 
 def build_fourier_alert_from_sorted_timestamps_ms(
@@ -422,6 +479,7 @@ def build_alerts_for_endpoint(
                 ts_end=alert_core.ts_end,
                 period_ts=alert_core.period_ts,
                 confidence=alert_core.confidence,
+                phase=alert_core.phase,
             )
             alert_key = (
                 alert_record.endpoint_id,

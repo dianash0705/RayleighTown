@@ -134,6 +134,41 @@
       letter-spacing: 0.05em;
     }
 
+    th.sortable {
+      padding: 0;
+    }
+
+    th.sortable button {
+      width: 100%;
+      padding: 14px 16px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-weight: 600;
+      text-transform: inherit;
+      letter-spacing: inherit;
+      cursor: pointer;
+      box-shadow: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    th.sortable button:hover {
+      background: rgba(123, 97, 255, 0.08);
+      transform: none;
+      box-shadow: none;
+    }
+
+    .sort-indicator {
+      font-size: 0.75rem;
+      color: var(--primary);
+      min-width: 1em;
+      text-align: right;
+    }
+
     /* Rounding the top corners of the table header */
     th:first-child { border-top-left-radius: 8px; }
     th:last-child { border-top-right-radius: 8px; }
@@ -166,13 +201,14 @@
     <table id="alertsTable" hidden>
       <thead>
         <tr>
-          <th>Alert ID</th>
-          <th>Event ID</th>
-          <th>Endpoint</th>
-          <th>Start (ms)</th>
-          <th>End (ms)</th>
-          <th>Period</th>
-          <th>Confidence</th>
+          <th class="sortable" data-sort-key="alertID"><button type="button">Alert ID <span class="sort-indicator"></span></button></th>
+          <th class="sortable" data-sort-key="nativeEventID"><button type="button">Event ID <span class="sort-indicator"></span></button></th>
+          <th class="sortable" data-sort-key="endpointID"><button type="button">Endpoint <span class="sort-indicator"></span></button></th>
+          <th class="sortable" data-sort-key="tsBegin"><button type="button">Start Time <span class="sort-indicator"></span></button></th>
+          <th class="sortable" data-sort-key="tsEnd"><button type="button">End Time <span class="sort-indicator"></span></button></th>
+          <th class="sortable" data-sort-key="periodTs"><button type="button">Period <span class="sort-indicator"></span></button></th>
+          <th class="sortable" data-sort-key="confidence"><button type="button">Confidence <span class="sort-indicator"></span></button></th>
+          <th>Windows</th>
         </tr>
       </thead>
       <tbody></tbody>
@@ -185,14 +221,114 @@
     const statusEl = document.getElementById("status");
     const table = document.getElementById("alertsTable");
     const tbody = table.querySelector("tbody");
+    const sortableHeaders = Array.from(table.querySelectorAll("th.sortable"));
 
-    function formatMs(value) {
+    let currentAlerts = [];
+    let sortState = {
+      key: "tsBegin",
+      direction: "asc",
+    };
+
+    function getSortValue(alert, key) {
+      const value = alert[key];
+      if (value === null || value === undefined || value === "") {
+        return key === "nativeEventID" ? Number.MAX_SAFE_INTEGER : "";
+      }
+
+      if (key === "endpointID") {
+        return String(value).toLowerCase();
+      }
+
+      const number = Number(value);
+      if (Number.isFinite(number)) {
+        return number;
+      }
+
+      return String(value).toLowerCase();
+    }
+
+    function compareAlerts(left, right) {
+      const leftValue = getSortValue(left, sortState.key);
+      const rightValue = getSortValue(right, sortState.key);
+
+      if (leftValue < rightValue) {
+        return sortState.direction === "asc" ? -1 : 1;
+      }
+
+      if (leftValue > rightValue) {
+        return sortState.direction === "asc" ? 1 : -1;
+      }
+
+      return 0;
+    }
+
+    function updateSortIndicators() {
+      for (const header of sortableHeaders) {
+        const indicator = header.querySelector(".sort-indicator");
+        const key = header.dataset.sortKey;
+        if (!indicator) {
+          continue;
+        }
+
+        if (key === sortState.key) {
+          indicator.textContent = sortState.direction === "asc" ? "▲" : "▼";
+        } else {
+          indicator.textContent = "";
+        }
+      }
+    }
+
+    function sortAndRenderAlerts() {
+      const sortedAlerts = [...currentAlerts].sort(compareAlerts);
+      renderRows(sortedAlerts);
+      updateSortIndicators();
+    }
+
+    function setSort(key) {
+      if (sortState.key === key) {
+        sortState.direction = sortState.direction === "asc" ? "desc" : "asc";
+      } else {
+        sortState.key = key;
+        sortState.direction = key === "tsBegin" ? "asc" : "desc";
+      }
+
+      sortAndRenderAlerts();
+    }
+
+    for (const header of sortableHeaders) {
+      const button = header.querySelector("button");
+      if (!button) {
+        continue;
+      }
+
+      button.addEventListener("click", function () {
+        setSort(header.dataset.sortKey);
+      });
+    }
+
+    const timestampFormatter = new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      fractionalSecondDigits: 3,
+      hour12: false,
+    });
+
+    function formatTimestamp(value) {
       const number = Number(value);
       if (!Number.isFinite(number)) {
         return value;
       }
 
-      return Math.round(number).toLocaleString();
+      const date = new Date(number);
+      if (Number.isNaN(date.getTime())) {
+        return value;
+      }
+
+      return timestampFormatter.format(date);
     }
 
     function formatPeriod(value) {
@@ -211,7 +347,15 @@
       for (const unit of units) {
         if (number >= unit.ms) {
           const scaled = number / unit.ms;
-          const rounded = scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1);
+          let rounded;
+          if (unit.label === "second") {
+            const roundedHalfSecond = Math.round(scaled * 2) / 2;
+            rounded = Number.isInteger(roundedHalfSecond)
+              ? roundedHalfSecond.toFixed(0)
+              : roundedHalfSecond.toFixed(1);
+          } else {
+            rounded = scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1);
+          }
           const suffix = Number(rounded) === 1 ? unit.label : unit.label + "s";
           return rounded + " " + suffix;
         }
@@ -224,14 +368,23 @@
       tbody.innerHTML = "";
       for (const alert of alerts) {
         const tr = document.createElement("tr");
+        const windows = Array.isArray(alert.windows) ? alert.windows : [];
+        const windowsHtml = windows.length === 0
+          ? "-"
+          : "<details><summary>" + windows.length + " window(s)</summary><ul style='margin: 8px 0 0 18px; padding: 0;'>" +
+            windows.map(function (windowAlert) {
+              return "<li>" + formatTimestamp(windowAlert.tsBegin) + " - " + formatTimestamp(windowAlert.tsEnd) + "</li>";
+            }).join("") +
+            "</ul></details>";
         tr.innerHTML =
           "<td>" + alert.alertID + "</td>" +
           "<td>" + (alert.nativeEventID ?? "-") + "</td>" +
           "<td>" + alert.endpointID + "</td>" +
-          "<td>" + formatMs(alert.tsBegin) + "</td>" +
-          "<td>" + formatMs(alert.tsEnd) + "</td>" +
+          "<td>" + formatTimestamp(alert.tsBegin) + "</td>" +
+          "<td>" + formatTimestamp(alert.tsEnd) + "</td>" +
           "<td>" + formatPeriod(alert.periodTs) + "</td>" +
-          "<td>" + alert.confidence + "</td>";
+          "<td>" + alert.confidence + "</td>" +
+          "<td>" + windowsHtml + "</td>";
         tbody.appendChild(tr);
       }
       table.hidden = alerts.length === 0;
@@ -258,7 +411,8 @@
         }
 
         statusEl.textContent = "Found " + data.count + " alert(s)";
-        renderRows(data.alerts);
+        currentAlerts = Array.isArray(data.alerts) ? data.alerts : [];
+        sortAndRenderAlerts();
       } catch (error) {
         statusEl.textContent = "Network error";
       }

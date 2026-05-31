@@ -20,9 +20,9 @@ CANDIDATE_PERIOD_GROUP_CONFIGS: tuple[CandidatePeriodGroupConfig, ...] = (
 	CandidatePeriodGroupConfig(
 		name="short",
 		window_size_ms=15 * 60_000,
-		start_ms=2_000,
+		start_ms=1_500,
 		end_ms=60_000,
-		step_ms=1_000,
+		step_ms=500,
 	),
 	CandidatePeriodGroupConfig(
 		name="medium",
