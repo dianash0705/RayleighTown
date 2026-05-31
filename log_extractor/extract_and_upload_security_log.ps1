@@ -103,7 +103,7 @@ try {
 }
 finally {
     if (-not $CustomLogPath -and (Test-Path $logFilePath)) {
-        Remove-Item -LiteralPath $logFilePath -Force
+        #Remove-Item -LiteralPath $logFilePath -Force
         Write-Host "Temporary log deleted: $logFilePath"
     }
 }

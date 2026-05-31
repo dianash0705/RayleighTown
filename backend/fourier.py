@@ -8,6 +8,8 @@ import numpy as np
 
 from tqdm.auto import tqdm
 
+from config import CANDIDATE_PERIOD_GROUP_CONFIGS
+
 RADIUS = 15_000
 PERCENTILE = 0.10
 SMALLEST_PERIOD_MS = 2_000 # in milliseconds, needs to be greater than the expected JITTER
@@ -49,6 +51,37 @@ def filter_by_snr(points: list[tuple[float, float]], median: float, mad: float, 
         snr_values.append((point, snr))
 
     return [point for point, snr in snr_values if snr >= min_snr]
+
+
+def _calculate_fourier_components(timestamps: list[float], period_ms: float) -> tuple[float, float, float, float]:
+    sum_x = 0.0
+    sum_y = 0.0
+    for time_of_event in timestamps:
+        alpha = (time_of_event % period_ms) / period_ms * (2 * math.pi)
+        sum_x += math.cos(alpha)
+        sum_y += math.sin(alpha)
+
+    avg_x = sum_x / len(timestamps)
+    avg_y = sum_y / len(timestamps)
+    magnitude = math.sqrt(avg_y**2 + avg_x**2)
+    phase = math.atan2(avg_y, avg_x)
+    return avg_x, avg_y, magnitude, phase
+
+
+def _phase_similarity(left_phase: float, right_phase: float) -> float:
+    return math.cos(left_phase - right_phase)
+
+
+def _is_harmonic_period(base_period_ms: float, candidate_period_ms: float, tolerance_ratio: float) -> bool:
+    if candidate_period_ms <= 0:
+        return False
+
+    ratio = base_period_ms / candidate_period_ms
+    nearest_multiplier = round(ratio)
+    if nearest_multiplier < 2:
+        return False
+
+    return abs(ratio - nearest_multiplier) <= tolerance_ratio
 
 
 def _estimate_harmonic_support(all_points: list[tuple[float, float]], target_period: float, median: float) -> float:
@@ -104,6 +137,50 @@ def filter_by_harmony(points: list[tuple[float, float]], all_points: list[tuple[
 
     return harmonic_points
 
+
+def suppress_phase_matched_ghost_peaks(
+    points: list[tuple[float, float]],
+    timestamps: list[float],
+    phase_similarity_threshold: float = 0.9,
+    harmonic_tolerance_ratio: float = 0.05,
+) -> list[tuple[float, float]]:
+    if not points:
+        return []
+
+    phase_cache: dict[float, float] = {}
+
+    def get_phase(period_ms: float) -> float:
+        cached_phase = phase_cache.get(period_ms)
+        if cached_phase is not None:
+            return cached_phase
+
+        _avg_x, _avg_y, _magnitude, phase = _calculate_fourier_components(timestamps, period_ms)
+        phase_cache[period_ms] = phase
+        return phase
+
+    kept_points: list[tuple[float, float]] = []
+    ordered_points = sorted(points, key=lambda point: point[0], reverse=True)
+
+    for point in ordered_points:
+        candidate_period_ms = point[0]
+        candidate_phase = get_phase(candidate_period_ms)
+
+        suppress_candidate = False
+        for kept_point in kept_points:
+            kept_period_ms = kept_point[0]
+            if not _is_harmonic_period(kept_period_ms, candidate_period_ms, harmonic_tolerance_ratio):
+                continue
+
+            kept_phase = get_phase(kept_period_ms)
+            if _phase_similarity(candidate_phase, kept_phase) >= phase_similarity_threshold:
+                suppress_candidate = True
+                break
+
+        if not suppress_candidate:
+            kept_points.append(point)
+
+    return kept_points
+
 def get_candidate_periods_ms2(time_range_ms: float) -> list[float]:
     largest_period_ms = time_range_ms / SMALLEST_APPEARANCE_COUNT
     if largest_period_ms <= SMALLEST_PERIOD_MS:
@@ -133,25 +210,22 @@ def get_candidate_period_groups_ms(time_range_ms: float) -> list[CandidatePeriod
 
     groups: list[CandidatePeriodGroup] = []
 
-    short_periods_ms: list[float] = []
-    append_range(short_periods_ms, 2_000, min(largest_period_ms, 60_000), 1_000)
-    if short_periods_ms:
-        groups.append(CandidatePeriodGroup(name="short", window_size_ms=15 * 60_000, periods_ms=short_periods_ms))
-
-    medium_periods_ms: list[float] = []
-    append_range(medium_periods_ms, 90_000, min(largest_period_ms, 1_800_000), 30_000)
-    if medium_periods_ms:
-        groups.append(CandidatePeriodGroup(name="medium", window_size_ms=6 * 60 * 60_000, periods_ms=medium_periods_ms))
-
-    long_periods_ms: list[float] = []
-    append_range(long_periods_ms, 35 * 60_000, min(largest_period_ms, 120 * 60_000), 5 * 60_000)
-    if long_periods_ms:
-        groups.append(CandidatePeriodGroup(name="long", window_size_ms=24 * 60 * 60_000, periods_ms=long_periods_ms))
-
-    very_long_periods_ms: list[float] = []
-    append_range(very_long_periods_ms, int(2.5 * 60 * 60_000), min(largest_period_ms, 24 * 60 * 60_000), 30 * 60_000)
-    if very_long_periods_ms:
-        groups.append(CandidatePeriodGroup(name="very_long", window_size_ms=7 * 24 * 60 * 60_000, periods_ms=very_long_periods_ms))
+    for group_config in CANDIDATE_PERIOD_GROUP_CONFIGS:
+        periods_ms: list[float] = []
+        append_range(
+            periods_ms,
+            group_config.start_ms,
+            min(largest_period_ms, group_config.end_ms),
+            group_config.step_ms,
+        )
+        if periods_ms:
+            groups.append(
+                CandidatePeriodGroup(
+                    name=group_config.name,
+                    window_size_ms=group_config.window_size_ms,
+                    periods_ms=periods_ms,
+                )
+            )
 
     return groups
 
@@ -166,6 +240,7 @@ def fourier_transform(
     timestamps: list[float],
     period_candidates_ms: list[float] | None = None,
     show_progress: bool = False,
+    include_phase: bool = False,
 ):
     if len(timestamps) < 2:
         raise ValueError("timestamps must contain at least two values")
@@ -175,6 +250,7 @@ def fourier_transform(
 
     point_xs = []
     point_ys = []
+    point_phases = []
     period_iterator = tqdm(
         periods_ms,
         desc="Fourier transform",
@@ -182,20 +258,15 @@ def fourier_transform(
         disable=not show_progress,
     )
     for period_ms in period_iterator:
-        sum_x = 0
-        sum_y = 0
-        for time_of_event in timestamps:
-            alpha = (time_of_event % period_ms) / period_ms * (2 * math.pi)
-            sum_x += math.cos(alpha)
-            sum_y += math.sin(alpha)
-
-        avg_x = sum_x / len(timestamps)
-        avg_y = sum_y / len(timestamps)
-
-        distance = math.sqrt(avg_y**2 + avg_x**2)
+        _avg_x, _avg_y, distance, phase = _calculate_fourier_components(timestamps, period_ms)
         point_xs.append(period_ms)
         point_ys.append(distance)
+        if include_phase:
+            point_phases.append(phase)
     
+    if include_phase:
+        return point_xs, point_ys, point_phases
+
     return point_xs, point_ys
 
 def find_threshold(points: list[tuple[float, float]], percentile: float):

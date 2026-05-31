@@ -14,6 +14,7 @@ def trigger_failed_logon():
     # 2 = LOGON32_LOGON_INTERACTIVE, 0 = LOGON32_PROVIDER_DEFAULT
     # This will fail and generate a 4625 event in the Security Log.
     advapi32.LogonUserW("RayleighFakeUser", ".", "FakePassword123!", 2, 0, ctypes.byref(token))
+    time.sleep(1)
 
 def trigger_account_management():
     """
@@ -68,7 +69,7 @@ def main():
             elif args.type == "type3":
                 trigger_firewall_rule()
             
-            time.sleep(args.period)
+            time.sleep(args.period - 1)
     except KeyboardInterrupt:
         print("\nTrigger script stopped by user.")
 

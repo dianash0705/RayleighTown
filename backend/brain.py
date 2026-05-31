@@ -16,6 +16,11 @@ from fourier import (
     filter_by_harmony,
     get_candidate_period_groups_ms,
 )
+from config import (
+    GHOST_PEAK_SUPPRESSION_ENABLED,
+    PHASE_GHOST_SUPPRESSION_ENABLED,
+    PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD,
+)
 
 MIN_EVENTS_FOR_ALERT = 4
 UNKNOWN_TIMESTAMP_MS = -1
@@ -51,6 +56,7 @@ class AlertCore:
     ts_end: int = UNKNOWN_TIMESTAMP_MS
     period_ts: float = math.nan
     confidence: int = UNKNOWN_CONFIDENCE
+    phase: float = math.nan
 
 
 FetchEventsFn = Callable[[str], Iterable[EventRecord]]
@@ -152,7 +158,7 @@ def _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
         return None
 
     alerts: list[AlertCore] = []
-    for group in candidate_groups:
+    for group in sorted(candidate_groups, key=lambda candidate_group: candidate_group.window_size_ms, reverse=True):
         grouped_alert_cores = _build_group_alerts_from_sorted_timestamps_ms(
             sorted_timestamps_ms,
             AlertBuildContext(
@@ -167,7 +173,46 @@ def _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
         if grouped_alert_cores:
             alerts.extend(grouped_alert_cores)
 
-    return alerts or None
+    if not alerts:
+        return None
+
+    if not GHOST_PEAK_SUPPRESSION_ENABLED:
+        return alerts
+
+    def is_harmonic(base_period_ms: float, candidate_period_ms: float, tolerance_ratio: float = 0.05) -> bool:
+        if candidate_period_ms <= 0:
+            return False
+
+        ratio = base_period_ms / candidate_period_ms
+        nearest_multiplier = round(ratio)
+        if nearest_multiplier < 2:
+            return False
+
+        return abs(ratio - nearest_multiplier) <= tolerance_ratio
+
+    filtered_alerts: list[AlertCore] = []
+    suppression_sources: list[AlertCore] = []
+    ordered_alerts = sorted(alerts, key=lambda alert_core: alert_core.period_ts, reverse=True)
+
+    for alert_core in ordered_alerts:
+        suppress_alert = False
+
+        for source_alert_core in suppression_sources:
+            if not is_harmonic(source_alert_core.period_ts, alert_core.period_ts):
+                continue
+
+            if (not PHASE_GHOST_SUPPRESSION_ENABLED) or (
+                math.cos(alert_core.phase - source_alert_core.phase) >= PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD
+            ):
+                suppress_alert = True
+                break
+
+        suppression_sources.append(alert_core)
+
+        if not suppress_alert:
+            filtered_alerts.append(alert_core)
+
+    return filtered_alerts or None
 
 
 def build_fourier_alert_from_sorted_timestamps_ms(
@@ -177,15 +222,26 @@ def build_fourier_alert_from_sorted_timestamps_ms(
     if len(sorted_timestamps_ms) < MIN_EVENTS_FOR_ALERT:
         return None
 
-    period_candidates_ms, magnitudes = fourier_transform(
-        sorted_timestamps_ms,
-        period_candidates_ms=context.period_candidates_ms,
-        show_progress=context.show_progress,
-    )
+    if PHASE_GHOST_SUPPRESSION_ENABLED:
+        period_candidates_ms, magnitudes, phases = fourier_transform(
+            sorted_timestamps_ms,
+            period_candidates_ms=context.period_candidates_ms,
+            show_progress=context.show_progress,
+            include_phase=True,
+        )
+    else:
+        period_candidates_ms, magnitudes = fourier_transform(
+            sorted_timestamps_ms,
+            period_candidates_ms=context.period_candidates_ms,
+            show_progress=context.show_progress,
+            include_phase=False,
+        )
+        phases = [math.nan for _ in period_candidates_ms]
     if not period_candidates_ms or not magnitudes:
         return None
 
     points = list(zip(period_candidates_ms, magnitudes))
+    phase_by_period = {period_ms: phase for period_ms, phase in zip(period_candidates_ms, phases)}
 
     median = get_median_value(magnitudes)
     distances_from_medians = []
@@ -294,6 +350,7 @@ def build_fourier_alert_from_sorted_timestamps_ms(
                 ts_end=sorted_timestamps_ms[-1],
                 period_ts=float(point[0]),
                 confidence=confidence,
+                phase=float(phase_by_period.get(point[0], math.nan)),
             ))
     return alerts
 
