@@ -9,7 +9,8 @@
 - `database.py`: SQLite schema, event inserts, and brain DB adapters
 - `log_processors.py`: per-log parsing/extraction logic
 - `log_registry.py`: supported `logID` registry
-- `routes.py`: API route handlers
+- `routes.py`: API and frontend route handlers
+- `static/index.html`, `static/style.css`, `static/script.js`: alerts viewer frontend
 - `run_brain.py`: manual brain trigger script (on-demand)
 - `setup_environment.py`: one-time environment setup command
 
@@ -47,12 +48,12 @@ python app.py --port 5001
 Open the web app in your browser at:
 
 ```text
-http://localhost:5000/
+http://localhost:2222/
 ```
 
 If you change the port, open `http://localhost:<your-port>/` instead.
 
-That page loads the alerts viewer in `backend/static/alerts.html` and calls the backend API from the same server.
+That page loads the alerts viewer from `backend/static/index.html` with `style.css` and `script.js`, and calls the backend API from the same server.
 
 ## Run brain manually (on demand)
 

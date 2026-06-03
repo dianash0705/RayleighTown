@@ -1,8 +1,9 @@
 from datetime import datetime
 import json
+from pathlib import Path
 from uuid import uuid4
 
-from flask import jsonify, request
+from flask import jsonify, redirect, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 from config import UPLOAD_DIR
@@ -80,7 +81,26 @@ def _log_id_from_source_name(source_name):
     return 999
 
 
+STATIC_DIR = Path(__file__).parent / "static"
+
+
 def register_routes(app):
+    @app.get("/")
+    def index():
+        return send_from_directory(STATIC_DIR, "index.html")
+
+    @app.get("/style.css")
+    def style_css():
+        return send_from_directory(STATIC_DIR, "style.css")
+
+    @app.get("/script.js")
+    def script_js():
+        return send_from_directory(STATIC_DIR, "script.js")
+
+    @app.get("/alerts.html")
+    def legacy_alerts_page():
+        return redirect("/", code=301)
+
     @app.get("/api/alerts")
     def get_alerts():
         endpoint_id = request.args.get("endpointID")
