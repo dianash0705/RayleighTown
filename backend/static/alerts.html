@@ -10,19 +10,24 @@
   <style>
     /* CSS Variables for a cohesive, elegant palette */
     :root {
-      --primary: #7b61ff; 
-      --primary-hover: #6a4dfc;
-      --bg-gradient: linear-gradient(135deg, #f3f5f9 0%, #e8ecf3 100%);
-      --surface: #ffffff;
-      --text-main: #334155;
-      --text-muted: #64748b;
-      --border: #e2e8f0;
+      --primary: #8b7bff; 
+      --primary-hover: #a79bff;
+      --bg-gradient: radial-gradient(circle at top, #1d2740 0%, #0f172a 42%, #0b1020 100%);
+      --surface: #121a2b;
+      --surface-elevated: #182238;
+      --surface-soft: #1c2740;
+      --surface-strong: #24314d;
+      --text-main: #e2e8f0;
+      --text-muted: #94a3b8;
+      --border: #2c3a57;
+      --shadow: 0 24px 80px -28px rgba(0, 0, 0, 0.65);
+      --grid-line: rgba(148, 163, 184, 0.14);
     }
 
     body { 
       font-family: 'Inter', sans-serif; 
       margin: 0; 
-      padding: 40px 20px;
+      padding: 32px 20px 48px;
       background: var(--bg-gradient);
       color: var(--text-main);
       display: flex;
@@ -34,28 +39,81 @@
     .container {
       background: var(--surface);
       width: 100%;
-      max-width: 850px;
-      padding: 32px 40px;
-      border-radius: 16px;
-      box-shadow: 0 10px 40px -10px rgba(0,0,0,0.08);
+      max-width: 1280px;
+      padding: 28px 28px 24px;
+      border-radius: 24px;
+      box-shadow: var(--shadow);
       height: fit-content;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+    }
+
+    .header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 24px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    }
+
+    .title-line {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .title-icon,
+    .chip-icon,
+    .window-icon,
+    .button-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      flex: 0 0 auto;
+      color: var(--primary);
+    }
+
+    .title-icon svg,
+    .chip-icon svg,
+    .window-icon svg,
+    .button-icon svg {
+      width: 100%;
+      height: 100%;
+      fill: currentColor;
+    }
+
+    .title-block {
+      display: grid;
+      gap: 6px;
     }
 
     h2 {
-      margin-top: 0;
+      margin: 0;
       color: var(--text-main);
-      font-weight: 600;
-      font-size: 1.5rem;
-      border-bottom: 2px solid #f1f5f9;
-      padding-bottom: 16px;
-      margin-bottom: 24px;
+      font-weight: 700;
+      font-size: 1.9rem;
+      letter-spacing: -0.03em;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      line-height: 1.5;
+      max-width: 64ch;
     }
 
     form { 
       display: flex;
       align-items: center;
       gap: 12px;
-      margin-bottom: 24px; 
+      margin: 0;
+      flex-wrap: wrap;
     }
 
     label {
@@ -74,17 +132,18 @@
       font-size: 0.95rem;
       font-family: inherit;
       color: var(--text-main);
+      background: #0f172a;
       outline: none;
       transition: all 0.2s ease;
     }
 
     input:focus {
       border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(123, 97, 255, 0.15);
+      box-shadow: 0 0 0 3px rgba(139, 123, 255, 0.18);
     }
 
     button {
-      background-color: var(--primary);
+      background: linear-gradient(135deg, var(--primary) 0%, #63b3ff 100%);
       color: white;
       border: none;
       padding: 10px 20px;
@@ -93,7 +152,32 @@
       font-weight: 500;
       cursor: pointer;
       transition: all 0.2s ease;
-      box-shadow: 0 4px 6px -1px rgba(123, 97, 255, 0.2);
+      box-shadow: 0 10px 18px -12px rgba(99, 179, 255, 0.55);
+    }
+
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 0 0 16px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, rgba(24, 34, 56, 0.98) 0%, rgba(18, 26, 43, 0.98) 100%);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      color: var(--text-muted);
+      font-size: 0.88rem;
+      font-weight: 500;
+    }
+
+    .chip strong {
+      color: var(--text-main);
+      font-weight: 700;
     }
 
     button:hover {
@@ -109,29 +193,56 @@
     #status {
       font-size: 0.9rem;
       color: var(--text-muted);
-      margin-bottom: 16px;
+      margin-bottom: 14px;
       min-height: 20px;
+    }
+
+    .table-shell {
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 18px;
+      overflow: hidden;
+      background: linear-gradient(180deg, rgba(18, 26, 43, 0.98) 0%, rgba(15, 23, 42, 0.98) 100%);
+    }
+
+    .table-scroll {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
     }
 
     table { 
       border-collapse: collapse; 
-      width: 100%; 
+      width: 100%;
+      min-width: 1200px; 
       font-size: 0.95rem;
+      table-layout: fixed;
     }
+
+    col.col-alert-id { width: 86px; }
+    col.col-event-id { width: 96px; }
+    col.col-endpoint { width: 96px; }
+    col.col-start { width: 242px; }
+    col.col-end { width: 242px; }
+    col.col-period { width: 176px; }
+    col.col-confidence { width: 112px; }
+    col.col-windows { width: auto; }
 
     th, td { 
       padding: 14px 16px; 
       text-align: left; 
-      border-bottom: 1px solid var(--border); 
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14); 
+      vertical-align: top;
     }
 
     th { 
-      background: #f8fafc; 
+      background: linear-gradient(180deg, rgba(24, 34, 56, 0.98) 0%, rgba(20, 30, 50, 0.98) 100%); 
       color: var(--text-muted);
       font-weight: 600;
       font-size: 0.85rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;
+      position: sticky;
+      top: 0;
+      z-index: 2;
     }
 
     th.sortable {
@@ -157,7 +268,7 @@
     }
 
     th.sortable button:hover {
-      background: rgba(123, 97, 255, 0.08);
+      background: rgba(139, 123, 255, 0.1);
       transform: none;
       box-shadow: none;
     }
@@ -179,46 +290,294 @@
     }
     
     tbody tr:hover {
-      background-color: #f8fafc;
+      background-color: rgba(139, 123, 255, 0.08);
+    }
+
+    tbody td {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    tbody td:last-child {
+      white-space: normal;
+      overflow: visible;
+    }
+
+    tbody td:nth-child(1),
+    tbody td:nth-child(2),
+    tbody td:nth-child(3),
+    tbody td:nth-child(7) {
+      text-align: center;
+    }
+
+    tbody td:nth-child(4),
+    tbody td:nth-child(5),
+    tbody td:nth-child(6) {
+      font-variant-numeric: tabular-nums;
+    }
+
+    tbody td:nth-child(6) {
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+      min-width: 166px;
+    }
+
+    tbody td:nth-child(7) {
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+    }
+
+    .confidence-badge,
+    .period-badge,
+    .window-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .confidence-badge {
+      background: rgba(139, 123, 255, 0.18);
+      color: #d8d3ff;
+    }
+
+    .period-badge {
+      background: rgba(56, 189, 248, 0.16);
+      color: #c7f0ff;
+    }
+
+    .window-pill {
+      background: rgba(34, 47, 74, 0.92);
+      color: var(--text-main);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+    }
+
+    .window-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .window-card {
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(24, 34, 56, 0.96) 0%, rgba(18, 26, 43, 0.98) 100%);
+      padding: 10px 12px;
+      display: grid;
+      gap: 6px;
+      box-shadow: 0 12px 24px -18px rgba(0, 0, 0, 0.65);
+    }
+
+    .window-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .window-card-title {
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .window-card-meta {
+      color: var(--text-muted);
+      font-size: 0.84rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .window-card-body {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .window-card .time-range {
+      font-family: inherit;
+      font-size: 0.88rem;
+      color: var(--text-main);
+      padding: 6px 10px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      word-break: break-word;
+    }
+
+    details {
+      display: block;
+    }
+
+    summary {
+      cursor: pointer;
+      color: var(--primary);
+      font-weight: 600;
+      list-style: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details ul {
+      color: var(--text-muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+    }
+
+    .summary-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .summary-chevron {
+      font-size: 0.75rem;
+      color: var(--primary);
+      transition: transform 0.18s ease;
+    }
+
+    details[open] .summary-chevron {
+      transform: rotate(90deg);
+    }
+
+    .summary-hint {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .title-icon svg,
+    .chip-icon svg,
+    .window-icon svg,
+    .button-icon svg {
+      filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.25));
+    }
+
+    @media (max-width: 900px) {
+      body {
+        padding: 16px;
+      }
+
+      .container {
+        padding: 20px 16px 16px;
+        border-radius: 18px;
+      }
+
+      h2 {
+        font-size: 1.5rem;
+      }
+
+      .subtitle {
+        font-size: 0.9rem;
+      }
+
+      form {
+        width: 100%;
+      }
+
+      input {
+        min-width: min(100%, 240px);
+      }
+
+      button {
+        width: 100%;
+      }
+
+      .chip-row {
+        gap: 8px;
+      }
+
+      .window-card-header {
+        align-items: start;
+      }
     }
   </style>
 </head>
 <body>
 
   <div class="container">
-    <h2>RayleighTown Alerts Viewer</h2>
+    <div class="header">
+      <div class="title-block">
+        <div class="title-line">
+          <span class="title-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.3 6.8 3.8L12 12 5.2 8.1 12 4.3zM5 9.9l6 3.3v6.6L5 16.4V9.9zm14 0v6.5l-6 3.4v-6.6l6-3.3z"/></svg>
+          </span>
+          <h2>RayleighTown Alerts Viewer</h2>
+        </div>
+        <p class="subtitle">Explore deduped alert groups, inspect their contributing windows, and sort by any major signal to follow the strongest periodic activity.</p>
+      </div>
 
-    <form id="queryForm">
-      <label>
-        Endpoint ID:
-        <input id="endpointID" value="123" placeholder="e.g. 123" required />
-      </label>
-      <button type="submit">Load Alerts</button>
-    </form>
+      <form id="queryForm">
+        <label>
+          Endpoint ID:
+          <input id="endpointID" value="123" placeholder="e.g. 123" required />
+        </label>
+        <button type="submit">Load Alerts</button>
+      </form>
+    </div>
+
+    <div class="chip-row" id="summaryRow" hidden>
+      <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 3 6v6c0 5 3.4 9.7 9 10 5.6-.3 9-5 9-10V6l-9-4zm0 3.2 5 2.2V12c0 3.8-2.3 7.2-5 7.9-2.7-.7-5-4.1-5-7.9V7.4l5-2.2z"/></svg></span><span>Alerts</span> <strong id="chipAlertCount">0</strong></div>
+      <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 4h18v2H3V4zm2 4h14v12H5V8zm2 2v8h10v-8H7zm2 2h6v2H9v-2z"/></svg></span><span>Windows</span> <strong id="chipWindowCount">0</strong></div>
+      <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7V3zm1 4h-2v6l5 3 1-1.7-4-2.3V7z"/></svg></span><span>Periods</span> <strong id="chipPeriodCount">0</strong></div>
+      <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h10v4h4v14H3V3h4zm2 2v2h6V5H9zm-4 4v10h14V9H5zm2 2h2v2H7v-2zm4 0h6v2h-6v-2zm-4 4h10v2H7v-2z"/></svg></span><span>Event IDs</span> <strong id="chipEventCount">0</strong></div>
+    </div>
 
     <div id="status"></div>
 
-    <table id="alertsTable" hidden>
-      <thead>
-        <tr>
-          <th class="sortable" data-sort-key="alertID"><button type="button">Alert ID <span class="sort-indicator"></span></button></th>
-          <th class="sortable" data-sort-key="nativeEventID"><button type="button">Event ID <span class="sort-indicator"></span></button></th>
-          <th class="sortable" data-sort-key="endpointID"><button type="button">Endpoint <span class="sort-indicator"></span></button></th>
-          <th class="sortable" data-sort-key="tsBegin"><button type="button">Start Time <span class="sort-indicator"></span></button></th>
-          <th class="sortable" data-sort-key="tsEnd"><button type="button">End Time <span class="sort-indicator"></span></button></th>
-          <th class="sortable" data-sort-key="periodTs"><button type="button">Period <span class="sort-indicator"></span></button></th>
-          <th class="sortable" data-sort-key="confidence"><button type="button">Confidence <span class="sort-indicator"></span></button></th>
-          <th>Windows</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
+    <div class="table-shell">
+      <div class="table-scroll">
+        <table id="alertsTable" hidden>
+          <colgroup>
+            <col class="col-alert-id" />
+            <col class="col-event-id" />
+            <col class="col-endpoint" />
+            <col class="col-start" />
+            <col class="col-end" />
+            <col class="col-period" />
+            <col class="col-confidence" />
+            <col class="col-windows" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="sortable" data-sort-key="alertID"><button type="button">Alert ID <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="nativeEventID"><button type="button">Event ID <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="endpointID"><button type="button">Endpoint <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="tsBegin"><button type="button">Start Time <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="tsEnd"><button type="button">End Time <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="periodTs"><button type="button">Period <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="confidence"><button type="button">Confidence <span class="sort-indicator"></span></button></th>
+              <th>Windows</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <script>
     const form = document.getElementById("queryForm");
     const endpointInput = document.getElementById("endpointID");
     const statusEl = document.getElementById("status");
+    const summaryRow = document.getElementById("summaryRow");
+    const chipAlertCount = document.getElementById("chipAlertCount");
+    const chipWindowCount = document.getElementById("chipWindowCount");
+    const chipPeriodCount = document.getElementById("chipPeriodCount");
+    const chipEventCount = document.getElementById("chipEventCount");
     const table = document.getElementById("alertsTable");
     const tbody = table.querySelector("tbody");
     const sortableHeaders = Array.from(table.querySelectorAll("th.sortable"));
@@ -282,6 +641,21 @@
       const sortedAlerts = [...currentAlerts].sort(compareAlerts);
       renderRows(sortedAlerts);
       updateSortIndicators();
+      updateSummary(sortedAlerts);
+    }
+
+    function updateSummary(alerts) {
+      const totalWindows = alerts.reduce((sum, alert) => {
+        return sum + (Array.isArray(alert.windows) ? alert.windows.length : 0);
+      }, 0);
+      const uniquePeriods = new Set(alerts.map((alert) => alert.periodTs)).size;
+      const uniqueEventIDs = new Set(alerts.map((alert) => alert.nativeEventID)).size;
+
+      chipAlertCount.textContent = String(alerts.length);
+      chipWindowCount.textContent = String(totalWindows);
+      chipPeriodCount.textContent = String(uniquePeriods);
+      chipEventCount.textContent = String(uniqueEventIDs);
+      summaryRow.hidden = alerts.length === 0;
     }
 
     function setSort(key) {
@@ -364,26 +738,66 @@
       return Math.round(number).toLocaleString() + " ms";
     }
 
+    function periodIcon() {
+      return "<span class='window-icon' aria-hidden='true'><svg viewBox='0 0 24 24'><path d='M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 5v5.2l4 2.4-1 1.7-5-3V7z'/></svg></span>";
+    }
+
+    function confidenceIcon() {
+      return "<span class='window-icon' aria-hidden='true'><svg viewBox='0 0 24 24'><path d='M12 2 3 7v10l9 5 9-5V7l-9-5zm0 3 6 3.3V15l-6 3.3L6 15V8.3L12 5z'/></svg></span>";
+    }
+
+    function formatConfidence(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) {
+        return value;
+      }
+
+      return Math.max(0, Math.min(100, Math.round(number))) + "%";
+    }
+
+    function formatWindowCount(count) {
+      return count === 1 ? "1 window" : count + " windows";
+    }
+
+    function renderWindowCards(windows) {
+      if (!windows.length) {
+        return "-";
+      }
+
+      return "<details><summary><span class='summary-row'><span class='window-pill'>" +
+        windows.length +
+        "</span><span class='summary-hint'>" +
+        formatWindowCount(windows.length) +
+        "</span><span class='summary-chevron'>▸</span></span></summary><div class='window-list'>" +
+        windows.map(function (windowAlert, index) {
+          const windowLabel = "Window " + (index + 1);
+          return "<div class='window-card'>" +
+            "<div class='window-card-header'>" +
+              "<div class='window-card-title'>" + windowLabel + "</div>" +
+              "<div class='window-card-meta'>Confidence " + formatConfidence(windowAlert.confidence) + "</div>" +
+            "</div>" +
+            "<div class='window-card-body'>" +
+              "<span class='time-range'>" + formatTimestamp(windowAlert.tsBegin) + " → " + formatTimestamp(windowAlert.tsEnd) + "</span>" +
+            "</div>" +
+          "</div>";
+        }).join("") +
+        "</div></details>";
+    }
+
     function renderRows(alerts) {
       tbody.innerHTML = "";
       for (const alert of alerts) {
         const tr = document.createElement("tr");
         const windows = Array.isArray(alert.windows) ? alert.windows : [];
-        const windowsHtml = windows.length === 0
-          ? "-"
-          : "<details><summary>" + windows.length + " window(s)</summary><ul style='margin: 8px 0 0 18px; padding: 0;'>" +
-            windows.map(function (windowAlert) {
-              return "<li>" + formatTimestamp(windowAlert.tsBegin) + " - " + formatTimestamp(windowAlert.tsEnd) + "</li>";
-            }).join("") +
-            "</ul></details>";
+        const windowsHtml = renderWindowCards(windows);
         tr.innerHTML =
           "<td>" + alert.alertID + "</td>" +
           "<td>" + (alert.nativeEventID ?? "-") + "</td>" +
           "<td>" + alert.endpointID + "</td>" +
           "<td>" + formatTimestamp(alert.tsBegin) + "</td>" +
           "<td>" + formatTimestamp(alert.tsEnd) + "</td>" +
-          "<td>" + formatPeriod(alert.periodTs) + "</td>" +
-          "<td>" + alert.confidence + "</td>" +
+          "<td><span class='period-badge'>" + periodIcon() + formatPeriod(alert.periodTs) + "</span></td>" +
+          "<td><span class='confidence-badge'>" + confidenceIcon() + formatConfidence(alert.confidence) + "</span></td>" +
           "<td>" + windowsHtml + "</td>";
         tbody.appendChild(tr);
       }
@@ -407,6 +821,7 @@
 
         if (!response.ok) {
           statusEl.textContent = data.error || "Failed to load alerts";
+          summaryRow.hidden = true;
           return;
         }
 
