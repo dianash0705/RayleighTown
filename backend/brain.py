@@ -16,21 +16,10 @@ from fourier import (
     filter_by_harmony,
     get_candidate_period_groups_ms,
 )
-from config import (
-    GHOST_PEAK_SUPPRESSION_ENABLED,
-    PHASE_GHOST_SUPPRESSION_ENABLED,
-    PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD,
-)
+from config import HARMONIC_ANALYSIS_CONFIG
 
-MIN_EVENTS_FOR_ALERT = 4
 UNKNOWN_TIMESTAMP_MS = -1
 UNKNOWN_CONFIDENCE = 0
-SUPPRESSION_RADIUS_MS = 500
-TOP_PERCENT = 0.10
-SNR_THRESHOLD = 3.0
-HARMONY_THRESHOLD = 0.8
-HARMONY_PEAK_COUNT = 2
-WINDOW_OVERLAP_RATIO = 0.5
 
 @dataclass(frozen=True)
 class EventRecord:
@@ -96,6 +85,56 @@ def _group_logs_by_native_event(events: Iterable[EventRecord]):
     return grouped
 
 
+def _is_harmonic_period(
+    base_period_ms: float,
+    candidate_period_ms: float,
+    tolerance_ratio: float,
+) -> bool:
+    if candidate_period_ms <= 0:
+        return False
+
+    ratio = base_period_ms / candidate_period_ms
+    nearest_multiplier = round(ratio)
+    if nearest_multiplier < 2:
+        return False
+
+    return abs(ratio - nearest_multiplier) <= tolerance_ratio
+
+
+def suppress_harmonic_ghost_alerts(alerts: list[AlertCore]) -> list[AlertCore]:
+    config = HARMONIC_ANALYSIS_CONFIG
+    if not config.ghost_suppression_enabled or not alerts:
+        return alerts
+
+    filtered_alerts: list[AlertCore] = []
+    suppression_sources: list[AlertCore] = []
+    ordered_alerts = sorted(alerts, key=lambda alert_core: alert_core.period_ts, reverse=True)
+
+    for alert_core in ordered_alerts:
+        suppress_alert = False
+
+        for source_alert_core in suppression_sources:
+            if not _is_harmonic_period(
+                source_alert_core.period_ts,
+                alert_core.period_ts,
+                config.harmonic_tolerance_ratio,
+            ):
+                continue
+
+            if (not config.phase_ghost_suppression_enabled) or (
+                math.cos(alert_core.phase - source_alert_core.phase) >= config.phase_similarity_threshold
+            ):
+                suppress_alert = True
+                break
+
+        suppression_sources.append(alert_core)
+
+        if not suppress_alert:
+            filtered_alerts.append(alert_core)
+
+    return filtered_alerts
+
+
 def _build_window_ranges(start_ms: int, end_ms: int, window_size_ms: int) -> list[tuple[int, int]]:
     if start_ms > end_ms:
         return []
@@ -103,7 +142,7 @@ def _build_window_ranges(start_ms: int, end_ms: int, window_size_ms: int) -> lis
     if start_ms == end_ms or (end_ms - start_ms) <= window_size_ms:
         return [(start_ms, end_ms)]
 
-    step_ms = max(1, int(window_size_ms * (1 - WINDOW_OVERLAP_RATIO)))
+    step_ms = max(1, int(window_size_ms * (1 - HARMONIC_ANALYSIS_CONFIG.window_overlap_ratio)))
     window_ranges: list[tuple[int, int]] = []
 
     current_start = start_ms
@@ -123,7 +162,7 @@ def _build_group_alerts_from_sorted_timestamps_ms(
     context: AlertBuildContext,
     window_size_ms: int,
 ) -> List[AlertCore] | None:
-    if len(sorted_timestamps_ms) < MIN_EVENTS_FOR_ALERT:
+    if len(sorted_timestamps_ms) < HARMONIC_ANALYSIS_CONFIG.min_events_for_alert:
         return None
 
     alerts: list[AlertCore] = []
@@ -134,7 +173,7 @@ def _build_group_alerts_from_sorted_timestamps_ms(
         right_index = bisect_right(sorted_timestamps_ms, window_end_ms)
         window_timestamps_ms = sorted_timestamps_ms[left_index:right_index]
 
-        if len(window_timestamps_ms) < MIN_EVENTS_FOR_ALERT:
+        if len(window_timestamps_ms) < HARMONIC_ANALYSIS_CONFIG.min_events_for_alert:
             continue
 
         alert_cores = build_fourier_alert_from_sorted_timestamps_ms(window_timestamps_ms, context)
@@ -205,7 +244,7 @@ def _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
     sorted_timestamps_ms: list[int],
     context: AlertBuildContext,
 ) -> List[AlertCore] | None:
-    if len(sorted_timestamps_ms) < MIN_EVENTS_FOR_ALERT:
+    if len(sorted_timestamps_ms) < HARMONIC_ANALYSIS_CONFIG.min_events_for_alert:
         return None
 
     try:
@@ -232,41 +271,7 @@ def _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
     if not alerts:
         return None
 
-    if GHOST_PEAK_SUPPRESSION_ENABLED:
-        def is_harmonic(base_period_ms: float, candidate_period_ms: float, tolerance_ratio: float = 0.05) -> bool:
-            if candidate_period_ms <= 0:
-                return False
-
-            ratio = base_period_ms / candidate_period_ms
-            nearest_multiplier = round(ratio)
-            if nearest_multiplier < 2:
-                return False
-
-            return abs(ratio - nearest_multiplier) <= tolerance_ratio
-
-        filtered_alerts: list[AlertCore] = []
-        suppression_sources: list[AlertCore] = []
-        ordered_alerts = sorted(alerts, key=lambda alert_core: alert_core.period_ts, reverse=True)
-
-        for alert_core in ordered_alerts:
-            suppress_alert = False
-
-            for source_alert_core in suppression_sources:
-                if not is_harmonic(source_alert_core.period_ts, alert_core.period_ts):
-                    continue
-
-                if (not PHASE_GHOST_SUPPRESSION_ENABLED) or (
-                    math.cos(alert_core.phase - source_alert_core.phase) >= PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD
-                ):
-                    suppress_alert = True
-                    break
-
-            suppression_sources.append(alert_core)
-
-            if not suppress_alert:
-                filtered_alerts.append(alert_core)
-
-        alerts = filtered_alerts
+    alerts = suppress_harmonic_ghost_alerts(alerts)
 
     merged_alerts = _merge_overlapping_alert_cores(alerts)
     return merged_alerts or None
@@ -276,10 +281,15 @@ def build_fourier_alert_from_sorted_timestamps_ms(
     sorted_timestamps_ms: list[int],
     context: AlertBuildContext,
 ) -> List[AlertCore] | None:
-    if len(sorted_timestamps_ms) < MIN_EVENTS_FOR_ALERT:
+    if len(sorted_timestamps_ms) < HARMONIC_ANALYSIS_CONFIG.min_events_for_alert:
         return None
 
-    if PHASE_GHOST_SUPPRESSION_ENABLED:
+    harmonic_config = HARMONIC_ANALYSIS_CONFIG
+    include_phase = (
+        harmonic_config.phase_ghost_suppression_enabled
+        or harmonic_config.use_phase_in_harmonic_check
+    )
+    if include_phase:
         period_candidates_ms, magnitudes, phases = fourier_transform(
             sorted_timestamps_ms,
             period_candidates_ms=context.period_candidates_ms,
@@ -313,7 +323,7 @@ def build_fourier_alert_from_sorted_timestamps_ms(
     #     return None
 
     suppressed_local_max_points = local_max_suppression(
-        radius=SUPPRESSION_RADIUS_MS,
+        radius=harmonic_config.suppression_radius_ms,
         local_maxs=local_max_points,
     )
     # if not suppressed_local_max_points:
@@ -321,7 +331,7 @@ def build_fourier_alert_from_sorted_timestamps_ms(
 
     top_percent_points = filter_top_percent(
         suppressed_local_max_points,
-        top_percent=TOP_PERCENT,
+        top_percent=harmonic_config.top_percent,
     )
     # if not top_percent_points:
     #     return None
@@ -331,15 +341,20 @@ def build_fourier_alert_from_sorted_timestamps_ms(
         top_percent_points,
         median=median,
         mad=mad,
-        min_snr=SNR_THRESHOLD,
+        min_snr=harmonic_config.snr_threshold,
     )
 
     harmonic_points = filter_by_harmony(
         high_snr_points,
         points,
-        threshold=HARMONY_THRESHOLD,
-        required_peak_count=HARMONY_PEAK_COUNT,
+        threshold=harmonic_config.harmony_magnitude_threshold,
+        required_peak_count=harmonic_config.harmony_peak_count,
         median=median,
+        timestamps=[float(timestamp_ms) for timestamp_ms in sorted_timestamps_ms],
+        use_dynamic_eval=harmonic_config.use_dynamic_harmonic_eval,
+        use_phase_check=harmonic_config.use_phase_in_harmonic_check,
+        phase_similarity_threshold=harmonic_config.phase_similarity_threshold,
+        harmonic_tolerance_ratio=harmonic_config.harmonic_tolerance_ratio,
     )
 
     # # Prune sub-harmonic duplicates: if a large-period point has matching
@@ -391,7 +406,7 @@ def build_fourier_alert_from_sorted_timestamps_ms(
                 harmonic_points=harmonic_points,
                 median=median,
                 mad=mad,
-                snr_threshold=SNR_THRESHOLD,
+                snr_threshold=harmonic_config.snr_threshold,
                 endpoint_id=context.endpoint_id,
                 native_event_id=context.native_event_id,
             )

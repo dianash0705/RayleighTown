@@ -68,6 +68,12 @@ def _calculate_fourier_components(timestamps: list[float], period_ms: float) -> 
     return avg_x, avg_y, magnitude, phase
 
 
+def evaluate_period(timestamps: list[float], period_ms: float) -> tuple[float, float]:
+    """Return (magnitude, phase) for an arbitrary candidate period."""
+    _avg_x, _avg_y, magnitude, phase = _calculate_fourier_components(timestamps, period_ms)
+    return magnitude, phase
+
+
 def _phase_similarity(left_phase: float, right_phase: float) -> float:
     return math.cos(left_phase - right_phase)
 
@@ -109,12 +115,75 @@ def _estimate_harmonic_support(all_points: list[tuple[float, float]], target_per
     right_support = max(0.0, right_magnitude - median)
     return left_support + right_support
 
-def filter_by_harmony(points: list[tuple[float, float]], all_points: list[tuple[float, float]], threshold: float, required_peak_count: int, median: float) -> list[tuple[float, float]]:
+
+def _grid_period_match_tolerance(target_period_ms: float, tolerance_ratio: float) -> float:
+    return max(1.0, target_period_ms * tolerance_ratio)
+
+
+def _grid_has_period(
+    all_points: list[tuple[float, float]],
+    target_period_ms: float,
+    tolerance_ratio: float,
+) -> bool:
+    tolerance_ms = _grid_period_match_tolerance(target_period_ms, tolerance_ratio)
+    for period_ms, _magnitude in all_points:
+        if abs(period_ms - target_period_ms) <= tolerance_ms:
+            return True
+    return False
+
+
+def _harmonic_support_at_period(
+    all_points: list[tuple[float, float]],
+    target_period_ms: float,
+    median: float,
+    timestamps: list[float] | None,
+    *,
+    use_dynamic_eval: bool,
+    harmonic_tolerance_ratio: float,
+    eval_cache: dict[float, tuple[float, float]] | None = None,
+) -> float:
+    if timestamps and use_dynamic_eval:
+        cached = eval_cache.get(target_period_ms) if eval_cache is not None else None
+        if cached is None:
+            magnitude, phase = evaluate_period(timestamps, target_period_ms)
+            if eval_cache is not None:
+                eval_cache[target_period_ms] = (magnitude, phase)
+        else:
+            magnitude, _phase = cached
+        return max(0.0, magnitude - median)
+
+    if timestamps and not _grid_has_period(all_points, target_period_ms, harmonic_tolerance_ratio):
+        cached = eval_cache.get(target_period_ms) if eval_cache is not None else None
+        if cached is None:
+            magnitude, phase = evaluate_period(timestamps, target_period_ms)
+            if eval_cache is not None:
+                eval_cache[target_period_ms] = (magnitude, phase)
+        else:
+            magnitude, _phase = cached
+        return max(0.0, magnitude - median)
+
+    return _estimate_harmonic_support(all_points, target_period_ms, median)
+
+
+def filter_by_harmony(
+    points: list[tuple[float, float]],
+    all_points: list[tuple[float, float]],
+    threshold: float,
+    required_peak_count: int,
+    median: float,
+    timestamps: list[float] | None = None,
+    *,
+    use_dynamic_eval: bool = True,
+    use_phase_check: bool = False,
+    phase_similarity_threshold: float = 0.9,
+    harmonic_tolerance_ratio: float = 0.05,
+) -> list[tuple[float, float]]:
     if not points:
         return []
 
     all_xs = [p[0] for p in all_points]
     first_x = all_xs[0]
+    eval_cache: dict[float, tuple[float, float]] = {}
 
     harmonic_points = []
     for point in points:
@@ -122,15 +191,43 @@ def filter_by_harmony(points: list[tuple[float, float]], all_points: list[tuple[
         magnitude = point[1] - median
 
         is_valid = True
+        fundamental_phase = None
+        if use_phase_check and timestamps:
+            fundamental_phase = eval_cache.get(period, (None, None))[1]
+            if fundamental_phase is None:
+                _magnitude, fundamental_phase = evaluate_period(timestamps, period)
+                eval_cache[period] = (_magnitude, fundamental_phase)
+
         for multiplier in range(2, required_peak_count + 2):
             required_peak_height = magnitude / multiplier
             harmonic_period = period / multiplier
             if harmonic_period < first_x:
-                break
-            harmonic_support = _estimate_harmonic_support(all_points, harmonic_period, median)
-            if not (harmonic_support >= required_peak_height * threshold):
+                if timestamps and use_dynamic_eval:
+                    pass
+                else:
+                    is_valid = False
+                    break
+            harmonic_support = _harmonic_support_at_period(
+                all_points,
+                harmonic_period,
+                median,
+                timestamps,
+                use_dynamic_eval=use_dynamic_eval,
+                harmonic_tolerance_ratio=harmonic_tolerance_ratio,
+                eval_cache=eval_cache,
+            )
+            if harmonic_support < required_peak_height * threshold:
                 is_valid = False
                 break
+
+            if use_phase_check and timestamps and fundamental_phase is not None:
+                harmonic_phase = eval_cache.get(harmonic_period, (None, None))[1]
+                if harmonic_phase is None:
+                    _magnitude, harmonic_phase = evaluate_period(timestamps, harmonic_period)
+                    eval_cache[harmonic_period] = (_magnitude, harmonic_phase)
+                if _phase_similarity(fundamental_phase, harmonic_phase) < phase_similarity_threshold:
+                    is_valid = False
+                    break
 
         if is_valid:
             harmonic_points.append(point)
