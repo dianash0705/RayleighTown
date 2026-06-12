@@ -584,7 +584,24 @@ resetFiltersButton.addEventListener("click", function () {
   loadAlerts();
 });
 
+function applyQueryParamsFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const endpointID = params.get("endpointID");
+  const timePreset = params.get("timePreset");
+
+  if (endpointID) {
+    endpointInput.value = endpointID;
+    setFiltersExpanded(true);
+  }
+
+  if (timePreset && timePresetInput.querySelector('option[value="' + timePreset + '"]')) {
+    timePresetInput.value = timePreset;
+    updateCustomTimeVisibility();
+  }
+}
+
 updateCustomTimeVisibility();
 setFiltersExpanded(false);
+applyQueryParamsFromUrl();
 loadMeta();
 loadAlerts();

@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from alert_filters import AlertQueryFilters, native_event_ids_for_filters
 from brain import EventRecord, run_brain_for_endpoint
@@ -677,3 +678,56 @@ def fetch_alert_detail(alert_group_id: int):
     alert["contributingEventCount"] = len(stored_events)
     alert["eventDetails"] = representative_event["parsedDetails"] if representative_event else None
     return alert
+
+
+def fetch_entities():
+    now = datetime.now(timezone.utc)
+    window_end_ms = int(now.timestamp() * 1000)
+    window_start_ms = int((now - timedelta(days=7)).timestamp() * 1000)
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            base.endpointID,
+            base.hostname,
+            base.ip,
+            COALESCE(counts.alertCount, 0) AS alertsLastWeek
+        FROM (
+            SELECT endpointID, hostname, ip FROM endpoints
+            UNION
+            SELECT DISTINCT g.endpointID, NULL, NULL
+            FROM alertGroups g
+            WHERE g.endpointID NOT IN (SELECT endpointID FROM endpoints)
+        ) base
+        LEFT JOIN (
+            SELECT endpointID, COUNT(*) AS alertCount
+            FROM alertGroups
+            WHERE tsBegin <= ?
+              AND tsEnd >= ?
+            GROUP BY endpointID
+        ) counts ON counts.endpointID = base.endpointID
+        ORDER BY alertsLastWeek DESC, base.endpointID ASC
+        """,
+        (window_end_ms, window_start_ms),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    entities = []
+    for endpoint_id, hostname, ip, alerts_last_week in rows:
+        entities.append(
+            {
+                "endpointID": endpoint_id,
+                "name": hostname,
+                "ip": ip,
+                "alertsLastWeek": int(alerts_last_week),
+            }
+        )
+
+    return {
+        "windowStart": window_start_ms,
+        "windowEnd": window_end_ms,
+        "entities": entities,
+    }

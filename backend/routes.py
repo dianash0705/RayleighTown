@@ -8,7 +8,7 @@ from werkzeug.utils import secure_filename
 
 from alert_filters import build_alert_filters
 from config import UPLOAD_DIR
-from database import fetch_alert_detail, fetch_alerts, insert_events, upsert_endpoint
+from database import fetch_alert_detail, fetch_alerts, fetch_entities, insert_events, upsert_endpoint
 from log_registry import LOG_TYPE_CONFIG, LOG_SOURCE_MAP, all_event_names
 
 
@@ -98,6 +98,14 @@ def register_routes(app):
     def script_js():
         return send_from_directory(STATIC_DIR, "script.js")
 
+    @app.get("/entities")
+    def entities_page():
+        return send_from_directory(STATIC_DIR, "entities.html")
+
+    @app.get("/entities.js")
+    def entities_js():
+        return send_from_directory(STATIC_DIR, "entities.js")
+
     @app.get("/alerts.html")
     def legacy_alerts_page():
         return redirect("/", code=301)
@@ -113,6 +121,18 @@ def register_routes(app):
                     {"id": "all", "label": "All time"},
                     {"id": "custom", "label": "Custom range"},
                 ],
+            }
+        ), 200
+
+    @app.get("/api/entities")
+    def get_entities():
+        payload = fetch_entities()
+        return jsonify(
+            {
+                "count": len(payload["entities"]),
+                "windowStart": payload["windowStart"],
+                "windowEnd": payload["windowEnd"],
+                "entities": payload["entities"],
             }
         ), 200
 
