@@ -6,9 +6,10 @@ from uuid import uuid4
 from flask import jsonify, redirect, request, send_from_directory
 from werkzeug.utils import secure_filename
 
+from alert_filters import build_alert_filters
 from config import UPLOAD_DIR
-from database import fetch_alerts_for_endpoint, insert_events
-from log_registry import LOG_TYPE_CONFIG, LOG_SOURCE_MAP
+from database import fetch_alert_detail, fetch_alerts, insert_events, upsert_endpoint
+from log_registry import LOG_TYPE_CONFIG, LOG_SOURCE_MAP, all_event_names
 
 
 def _source_name_from_json_file(log_path):
@@ -101,20 +102,48 @@ def register_routes(app):
     def legacy_alerts_page():
         return redirect("/", code=301)
 
-    @app.get("/api/alerts")
-    def get_alerts():
-        endpoint_id = request.args.get("endpointID")
-        if not endpoint_id:
-            return jsonify({"error": "Missing query parameter 'endpointID'."}), 400
-
-        alerts = fetch_alerts_for_endpoint(endpoint_id)
+    @app.get("/api/meta")
+    def get_meta():
         return jsonify(
             {
-                "endpointID": endpoint_id,
+                "eventNames": all_event_names(),
+                "timePresets": [
+                    {"id": "last_24h", "label": "Last 24 hours"},
+                    {"id": "last_week", "label": "Last week"},
+                    {"id": "all", "label": "All time"},
+                    {"id": "custom", "label": "Custom range"},
+                ],
+            }
+        ), 200
+
+    @app.get("/api/alerts")
+    def get_alerts():
+        filters = build_alert_filters(request.args)
+        alerts = fetch_alerts(filters)
+        return jsonify(
+            {
                 "count": len(alerts),
+                "filters": {
+                    "endpointID": filters.endpoint_id,
+                    "nativeEventID": filters.native_event_id,
+                    "eventName": filters.event_name,
+                    "minConfidence": filters.min_confidence,
+                    "timePreset": request.args.get("timePreset"),
+                    "timeFrom": filters.window_start_ms,
+                    "timeTo": filters.window_end_ms,
+                    "sort": filters.sort_key,
+                    "order": filters.sort_direction,
+                },
                 "alerts": alerts,
             }
         ), 200
+
+    @app.get("/api/alerts/<int:alert_group_id>")
+    def get_alert_detail(alert_group_id: int):
+        alert = fetch_alert_detail(alert_group_id)
+        if alert is None:
+            return jsonify({"error": f"Alert group {alert_group_id} not found."}), 404
+        return jsonify(alert), 200
 
     @app.post("/api/logs/upload")
     def upload_log():
@@ -122,14 +151,15 @@ def register_routes(app):
         if not endpoint_id:
             return jsonify({"error": "Missing form field 'endpointID'."}), 400
 
+        hostname = (request.form.get("hostname") or "").strip() or None
+        ip = (request.form.get("ip") or "").strip() or None
+
         log_id_raw = request.form.get("logID", "0")
         try:
             log_id = int(log_id_raw)
         except ValueError:
             return jsonify({"error": "Invalid form field 'logID'. Must be an integer."}), 400
 
-        # Allow clients to indicate a source name for uploaded JSON logs. If provided,
-        # map the source name back to a configured logID and override the supplied logID.
         source_name = request.form.get("sourceName")
         if source_name:
             mapped = _log_id_from_source_name(source_name)
@@ -170,11 +200,12 @@ def register_routes(app):
         try:
             extractor = log_config["extractor"]
             event_id_whitelist = log_config["event_id_whitelist"]
-            whitelisted_events = extractor(destination, event_id_whitelist)
+            whitelisted_events = extractor(destination, event_id_whitelist, log_id)
         except RuntimeError as err:
             return jsonify({"error": str(err)}), 400
 
         inserted_count = insert_events(endpoint_id, log_id, whitelisted_events)
+        upsert_endpoint(endpoint_id, hostname, ip, int(datetime.utcnow().timestamp() * 1000))
 
         return jsonify(
             {

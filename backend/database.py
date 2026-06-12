@@ -1,7 +1,11 @@
+import json
 import sqlite3
 
+from alert_filters import AlertQueryFilters, native_event_ids_for_filters
 from brain import EventRecord, run_brain_for_endpoint
 from config import DB_PATH, PHASE_GHOST_SUPPRESSION_ENABLED, PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD
+from event_parsers.common import extract_endpoint_agent_metadata
+from log_registry import resolve_event_name, resolve_log_source_name
 
 
 def _table_columns(cursor, table_name: str) -> set[str]:
@@ -23,7 +27,18 @@ def _phase_similarity(left_phase: float, right_phase: float) -> float:
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS endpoints (
+            endpointID TEXT PRIMARY KEY,
+            hostname TEXT,
+            ip TEXT,
+            lastSeenAt INTEGER
+        )
+        """
+    )
+    cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS logs (
             endpointID TEXT NOT NULL,
@@ -32,16 +47,19 @@ def init_db():
             logID INTEGER NOT NULL,
             nativeEventID INTEGER NOT NULL,
             internalEventType INTEGER NOT NULL,
+            rawPayload TEXT NOT NULL,
+            parsedDetails TEXT NOT NULL,
             PRIMARY KEY (endpointID, internalEventID)
         )
         """
     )
-    conn.execute(
+    cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS alerts (
             alertID INTEGER PRIMARY KEY AUTOINCREMENT,
             endpointID TEXT NOT NULL,
             nativeEventID INTEGER NOT NULL,
+            logID INTEGER,
             tsBegin INTEGER NOT NULL,
             tsEnd INTEGER NOT NULL,
             periodTs REAL,
@@ -50,7 +68,7 @@ def init_db():
         )
         """
     )
-    conn.execute(
+    cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS eventAlertMap (
             eventID INTEGER NOT NULL,
@@ -60,12 +78,13 @@ def init_db():
         )
         """
     )
-    conn.execute(
+    cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS alertGroups (
             alertGroupID INTEGER PRIMARY KEY AUTOINCREMENT,
             endpointID TEXT NOT NULL,
             nativeEventID INTEGER NOT NULL,
+            logID INTEGER,
             tsBegin INTEGER NOT NULL,
             tsEnd INTEGER NOT NULL,
             periodTs REAL,
@@ -74,7 +93,7 @@ def init_db():
         )
         """
     )
-    conn.execute(
+    cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS alertGroupMap (
             alertGroupID INTEGER NOT NULL,
@@ -86,6 +105,28 @@ def init_db():
 
     _ensure_column(cursor=conn.cursor(), table_name="alerts", column_definition="nativeEventID INTEGER NOT NULL DEFAULT 0")
     _ensure_column(cursor=conn.cursor(), table_name="alerts", column_definition="phase REAL")
+    _ensure_column(cursor=conn.cursor(), table_name="alerts", column_definition="logID INTEGER")
+    _ensure_column(cursor=conn.cursor(), table_name="alertGroups", column_definition="logID INTEGER")
+    _ensure_column(cursor=conn.cursor(), table_name="logs", column_definition="rawPayload TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(cursor=conn.cursor(), table_name="logs", column_definition="parsedDetails TEXT NOT NULL DEFAULT '{}'")
+    conn.commit()
+    conn.close()
+
+
+def upsert_endpoint(endpoint_id: str, hostname: str | None, ip: str | None, last_seen_at: int) -> None:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO endpoints (endpointID, hostname, ip, lastSeenAt)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(endpointID) DO UPDATE SET
+            hostname = COALESCE(excluded.hostname, endpoints.hostname),
+            ip = COALESCE(excluded.ip, endpoints.ip),
+            lastSeenAt = MAX(endpoints.lastSeenAt, excluded.lastSeenAt)
+        """,
+        (endpoint_id, hostname, ip, last_seen_at),
+    )
     conn.commit()
     conn.close()
 
@@ -101,9 +142,28 @@ def insert_events(endpoint_id: str, log_id: int, events):
     max_id_row = cursor.fetchone()
     next_internal_event_id = 0 if max_id_row[0] is None else max_id_row[0] + 1
 
-    for timestamp_ms, native_event_id in events:
+    latest_timestamp = 0
+    endpoint_hostname = None
+    endpoint_ip = None
+
+    for event in events:
+        timestamp_ms = event["timestamp_ms"]
+        native_event_id = event["native_event_id"]
         if not isinstance(timestamp_ms, int):
             raise TypeError("timestamp_ms must be int")
+
+        raw_payload = event.get("raw_payload") or {}
+        parsed_details = event.get("parsed_details") or {}
+        agent_hostname, agent_ip = extract_endpoint_agent_metadata(raw_payload)
+        hostname = event.get("hostname") or agent_hostname
+        ip = event.get("ip") or agent_ip
+
+        if hostname and not endpoint_hostname:
+            endpoint_hostname = hostname
+        if ip:
+            endpoint_ip = ip
+        latest_timestamp = max(latest_timestamp, timestamp_ms)
+
         cursor.execute(
             """
             INSERT INTO logs (
@@ -112,8 +172,10 @@ def insert_events(endpoint_id: str, log_id: int, events):
                 timestamp,
                 logID,
                 nativeEventID,
-                internalEventType
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                internalEventType,
+                rawPayload,
+                parsedDetails
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 endpoint_id,
@@ -122,9 +184,24 @@ def insert_events(endpoint_id: str, log_id: int, events):
                 log_id,
                 native_event_id,
                 native_event_id,
+                json.dumps(raw_payload),
+                json.dumps(parsed_details),
             ),
         )
         next_internal_event_id += 1
+
+    if latest_timestamp:
+        cursor.execute(
+            """
+            INSERT INTO endpoints (endpointID, hostname, ip, lastSeenAt)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(endpointID) DO UPDATE SET
+                hostname = COALESCE(excluded.hostname, endpoints.hostname),
+                ip = COALESCE(excluded.ip, endpoints.ip),
+                lastSeenAt = MAX(endpoints.lastSeenAt, excluded.lastSeenAt)
+            """,
+            (endpoint_id, endpoint_hostname, endpoint_ip, latest_timestamp),
+        )
 
     conn.commit()
     conn.close()
@@ -156,6 +233,34 @@ def fetch_events_for_endpoint(endpoint_id: str) -> list[EventRecord]:
     ]
 
 
+def _alert_log_id(cursor, endpoint_id: str, native_event_id: int, event_ids: list[int]) -> int | None:
+    if event_ids:
+        cursor.execute(
+            """
+            SELECT logID
+            FROM logs
+            WHERE endpointID = ? AND internalEventID = ?
+            """,
+            (endpoint_id, event_ids[0]),
+        )
+        row = cursor.fetchone()
+        if row and row[0] is not None:
+            return int(row[0])
+
+    cursor.execute(
+        """
+        SELECT logID
+        FROM logs
+        WHERE endpointID = ? AND nativeEventID = ?
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """,
+        (endpoint_id, native_event_id),
+    )
+    row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
 def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -174,21 +279,24 @@ def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
     raw_alert_rows = []
 
     for alert in alerts:
+        log_id = _alert_log_id(cursor, alert.endpoint_id, alert.native_event_id, alert.event_ids)
         cursor.execute(
             """
             INSERT INTO alerts (
                 endpointID,
                 nativeEventID,
+                logID,
                 tsBegin,
                 tsEnd,
                 periodTs,
                 confidence,
                 phase
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 alert.endpoint_id,
                 alert.native_event_id,
+                log_id,
                 alert.ts_begin,
                 alert.ts_end,
                 alert.period_ts,
@@ -202,6 +310,7 @@ def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
                 "alert_id": alert_id,
                 "endpoint_id": alert.endpoint_id,
                 "native_event_id": alert.native_event_id,
+                "log_id": log_id,
                 "ts_begin": alert.ts_begin,
                 "ts_end": alert.ts_end,
                 "period_ts": alert.period_ts,
@@ -243,12 +352,16 @@ def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
 
         return None
 
-    for raw_alert_row in sorted(raw_alert_rows, key=lambda row: (row["native_event_id"], row["period_ts"], row["ts_begin"], row["ts_end"], row["alert_id"])):
+    for raw_alert_row in sorted(
+        raw_alert_rows,
+        key=lambda row: (row["native_event_id"], row["period_ts"], row["ts_begin"], row["ts_end"], row["alert_id"]),
+    ):
         group = find_matching_group(raw_alert_row)
         if group is None:
             group = {
                 "endpoint_id": raw_alert_row["endpoint_id"],
                 "native_event_id": raw_alert_row["native_event_id"],
+                "log_id": raw_alert_row["log_id"],
                 "ts_begin": raw_alert_row["ts_begin"],
                 "ts_end": raw_alert_row["ts_end"],
                 "period_ts": raw_alert_row["period_ts"],
@@ -261,6 +374,8 @@ def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
             group["ts_begin"] = min(group["ts_begin"], raw_alert_row["ts_begin"])
             group["ts_end"] = max(group["ts_end"], raw_alert_row["ts_end"])
             group["confidence"] = max(group["confidence"], raw_alert_row["confidence"])
+            if group["log_id"] is None and raw_alert_row["log_id"] is not None:
+                group["log_id"] = raw_alert_row["log_id"]
             if group["phase"] is None and raw_alert_row["phase"] is not None:
                 group["phase"] = raw_alert_row["phase"]
             group["alert_ids"].append(raw_alert_row["alert_id"])
@@ -271,16 +386,18 @@ def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
             INSERT INTO alertGroups (
                 endpointID,
                 nativeEventID,
+                logID,
                 tsBegin,
                 tsEnd,
                 periodTs,
                 confidence,
                 phase
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 group["endpoint_id"],
                 group["native_event_id"],
+                group["log_id"],
                 group["ts_begin"],
                 group["ts_end"],
                 group["period_ts"],
@@ -322,7 +439,131 @@ def recompute_alerts_for_endpoint(
     )
 
 
-def fetch_alerts_for_endpoint(endpoint_id: str):
+def _serialize_alert_group_row(row, windows):
+    log_id = row[8] if len(row) > 8 else None
+    native_event_id = row[2]
+    return {
+        "alertID": row[0],
+        "endpointID": row[1],
+        "nativeEventID": native_event_id,
+        "eventName": resolve_event_name(log_id, native_event_id),
+        "logID": log_id,
+        "logSource": resolve_log_source_name(log_id),
+        "tsBegin": row[3],
+        "tsEnd": row[4],
+        "periodTs": row[5],
+        "confidence": row[6],
+        "phase": row[7],
+        "hostname": row[9] if len(row) > 9 else None,
+        "ip": row[10] if len(row) > 10 else None,
+        "windows": windows,
+    }
+
+
+def fetch_alerts(filters: AlertQueryFilters):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    where_clauses = []
+    params: list = []
+
+    if filters.endpoint_id:
+        where_clauses.append("g.endpointID = ?")
+        params.append(filters.endpoint_id)
+
+    native_event_ids = native_event_ids_for_filters(filters)
+    if native_event_ids is not None:
+        if not native_event_ids:
+            conn.close()
+            return []
+        placeholders = ", ".join("?" for _ in native_event_ids)
+        where_clauses.append(f"g.nativeEventID IN ({placeholders})")
+        params.extend(sorted(native_event_ids))
+
+    if filters.min_confidence is not None:
+        where_clauses.append("g.confidence >= ?")
+        params.append(filters.min_confidence)
+
+    if filters.window_start_ms is not None and filters.window_end_ms is not None:
+        where_clauses.append("g.tsBegin <= ?")
+        where_clauses.append("g.tsEnd >= ?")
+        params.extend([filters.window_end_ms, filters.window_start_ms])
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+    sort_column_map = {
+        "alertID": "g.alertGroupID",
+        "nativeEventID": "g.nativeEventID",
+        "endpointID": "g.endpointID",
+        "tsBegin": "g.tsBegin",
+        "tsEnd": "g.tsEnd",
+        "periodTs": "g.periodTs",
+        "confidence": "g.confidence",
+    }
+    sort_column = sort_column_map.get(filters.sort_key, "g.confidence")
+    if filters.sort_key == "eventName":
+        sort_column = "g.nativeEventID"
+    sort_direction = "ASC" if filters.sort_direction == "asc" else "DESC"
+
+    cursor.execute(
+        f"""
+        SELECT
+            g.alertGroupID,
+            g.endpointID,
+            g.nativeEventID,
+            g.tsBegin,
+            g.tsEnd,
+            g.periodTs,
+            g.confidence,
+            g.phase,
+            g.logID,
+            e.hostname,
+            e.ip,
+            a.alertID,
+            a.tsBegin,
+            a.tsEnd,
+            a.confidence,
+            a.phase
+        FROM alertGroups g
+        LEFT JOIN endpoints e ON e.endpointID = g.endpointID
+        LEFT JOIN alertGroupMap gm ON gm.alertGroupID = g.alertGroupID
+        LEFT JOIN alerts a ON a.alertID = gm.alertID
+        {where_sql}
+        ORDER BY {sort_column} {sort_direction}, g.tsEnd DESC, a.tsBegin ASC
+        """,
+        params,
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    grouped_alerts = {}
+    for row in rows:
+        alert_group_id = row[0]
+        alert = grouped_alerts.get(alert_group_id)
+        if alert is None:
+            alert = _serialize_alert_group_row(row[:11], [])
+            grouped_alerts[alert_group_id] = alert
+
+        child_alert_id = row[11]
+        if child_alert_id is not None:
+            alert["windows"].append(
+                {
+                    "alertID": child_alert_id,
+                    "tsBegin": row[12],
+                    "tsEnd": row[13],
+                    "confidence": row[14],
+                    "phase": row[15],
+                }
+            )
+
+    alerts = list(grouped_alerts.values())
+    if filters.sort_key == "eventName":
+        reverse = filters.sort_direction == "desc"
+        alerts.sort(key=lambda item: item.get("eventName", "").lower(), reverse=reverse)
+    return alerts
+
+
+def fetch_alert_detail(alert_group_id: int):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
@@ -336,50 +577,103 @@ def fetch_alerts_for_endpoint(endpoint_id: str):
             g.periodTs,
             g.confidence,
             g.phase,
+            g.logID,
+            e.hostname,
+            e.ip
+        FROM alertGroups g
+        LEFT JOIN endpoints e ON e.endpointID = g.endpointID
+        WHERE g.alertGroupID = ?
+        """,
+        (alert_group_id,),
+    )
+    group_row = cursor.fetchone()
+    if group_row is None:
+        conn.close()
+        return None
+
+    cursor.execute(
+        """
+        SELECT
             a.alertID,
             a.tsBegin,
             a.tsEnd,
             a.confidence,
             a.phase
-        FROM alertGroups g
-        LEFT JOIN alertGroupMap gm ON gm.alertGroupID = g.alertGroupID
-        LEFT JOIN alerts a ON a.alertID = gm.alertID
-        WHERE g.endpointID = ?
-        ORDER BY g.confidence DESC, g.tsBegin DESC, a.tsBegin ASC
+        FROM alerts a
+        JOIN alertGroupMap gm ON gm.alertID = a.alertID
+        WHERE gm.alertGroupID = ?
+        ORDER BY a.tsBegin ASC
         """,
-        (endpoint_id,),
+        (alert_group_id,),
     )
-    rows = cursor.fetchall()
+    window_rows = cursor.fetchall()
+
+    cursor.execute(
+        """
+        SELECT
+            l.internalEventID,
+            l.timestamp,
+            l.logID,
+            l.nativeEventID,
+            l.rawPayload,
+            l.parsedDetails
+        FROM logs l
+        JOIN alertGroups g ON g.endpointID = l.endpointID
+        JOIN eventAlertMap eam ON eam.eventID = l.internalEventID
+        JOIN alertGroupMap agm ON agm.alertID = eam.alertID AND agm.alertGroupID = g.alertGroupID
+        WHERE g.alertGroupID = ?
+        ORDER BY l.timestamp ASC
+        """,
+        (alert_group_id,),
+    )
+    event_rows = cursor.fetchall()
     conn.close()
 
-    grouped_alerts = {}
-    for row in rows:
-        alert_group_id = row[0]
-        alert = grouped_alerts.get(alert_group_id)
-        if alert is None:
-            alert = {
-                "alertID": alert_group_id,
-                "endpointID": row[1],
-                "nativeEventID": row[2],
-                "tsBegin": row[3],
-                "tsEnd": row[4],
-                "periodTs": row[5],
-                "confidence": row[6],
-                "phase": row[7],
-                "windows": [],
-            }
-            grouped_alerts[alert_group_id] = alert
+    log_id = group_row[8]
+    native_event_id = group_row[2]
+    representative_event = None
+    stored_events = []
 
-        child_alert_id = row[8]
-        if child_alert_id is not None:
-            alert["windows"].append(
-                {
-                    "alertID": child_alert_id,
-                    "tsBegin": row[9],
-                    "tsEnd": row[10],
-                    "confidence": row[11],
-                    "phase": row[12],
-                }
-            )
+    for event_row in event_rows:
+        parsed_details = json.loads(event_row[5] or "{}")
+        raw_payload = json.loads(event_row[4] or "{}")
+        event_item = {
+            "internalEventID": event_row[0],
+            "timestamp": event_row[1],
+            "logID": event_row[2],
+            "nativeEventID": event_row[3],
+            "parsedDetails": parsed_details,
+            "identity": parsed_details.get("identity", {}),
+            "rawPayload": raw_payload,
+        }
+        stored_events.append(event_item)
+        if representative_event is None:
+            representative_event = event_item
 
-    return list(grouped_alerts.values())
+    windows = [
+        {
+            "alertID": row[0],
+            "tsBegin": row[1],
+            "tsEnd": row[2],
+            "confidence": row[3],
+            "phase": row[4],
+        }
+        for row in window_rows
+    ]
+
+    alert = _serialize_alert_group_row(group_row, windows)
+    if not alert.get("hostname") or not alert.get("ip"):
+        for event_item in stored_events:
+            hostname, ip = extract_endpoint_agent_metadata(event_item.get("rawPayload") or {})
+            if not alert.get("hostname") and hostname:
+                alert["hostname"] = hostname
+            if not alert.get("ip") and ip:
+                alert["ip"] = ip
+            if alert.get("hostname") and alert.get("ip"):
+                break
+
+    alert["representativeEvent"] = representative_event
+    alert["contributingEvents"] = stored_events
+    alert["contributingEventCount"] = len(stored_events)
+    alert["eventDetails"] = representative_event["parsedDetails"] if representative_event else None
+    return alert

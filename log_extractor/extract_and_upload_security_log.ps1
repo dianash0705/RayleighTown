@@ -89,7 +89,30 @@ try {
         }
     }
 
+    $agentHostname = $env:COMPUTERNAME
+    $agentIp = $null
+    try {
+        $agentIp = Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred |
+            Where-Object {
+                $_.InterfaceAlias -notmatch 'Loopback' -and
+                $_.IPAddress -notmatch '^169\.254\.' -and
+                $_.IPAddress -ne '127.0.0.1'
+            } |
+            Select-Object -First 1 -ExpandProperty IPAddress
+    }
+    catch {
+        $agentIp = $null
+    }
+
     $curlArgs = @('-sS','-f','-X','POST',"$BackendUrl","-F","endpointID=$EndpointID","-F","logID=$logID","-F","log_file=@$logFilePath")
+    if ($agentHostname) {
+        $curlArgs += '-F'
+        $curlArgs += "hostname=$agentHostname"
+    }
+    if ($agentIp) {
+        $curlArgs += '-F'
+        $curlArgs += "ip=$agentIp"
+    }
     if ($additionalForm.Count -gt 0) { $curlArgs += $additionalForm }
 
     $response = & curl.exe @curlArgs

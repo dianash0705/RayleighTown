@@ -62,5 +62,45 @@ LOG_TYPE_CONFIG[999] = {
     "name": LOG_SOURCE_MAP.get(999, "unknown source"),
     "extractor": extract_windows_events,
     "event_id_whitelist": None,
-    "event_id_names": {},
+    "event_id_names": {**WINDOWS_SECURITY_EVENT_NAMES, **SYSMON_EVENT_NAMES},
 }
+
+
+def all_event_names() -> list[str]:
+    names: set[str] = set()
+    for config in LOG_TYPE_CONFIG.values():
+        names.update(config.get("event_id_names", {}).values())
+    return sorted(names)
+
+
+def resolve_event_name(log_id: int | None, native_event_id: int) -> str:
+    if log_id is not None:
+        config = LOG_TYPE_CONFIG.get(log_id)
+        if config:
+            name = config.get("event_id_names", {}).get(native_event_id)
+            if name:
+                return name
+
+    for config in LOG_TYPE_CONFIG.values():
+        name = config.get("event_id_names", {}).get(native_event_id)
+        if name:
+            return name
+
+    return f"Event {native_event_id}"
+
+
+def resolve_native_event_ids_for_name(event_name: str) -> set[int]:
+    normalized = event_name.strip().lower()
+    matches: set[int] = set()
+    for config in LOG_TYPE_CONFIG.values():
+        for native_event_id, name in config.get("event_id_names", {}).items():
+            if name.lower() == normalized:
+                matches.add(native_event_id)
+    return matches
+
+
+def resolve_log_source_name(log_id: int | None) -> str | None:
+    if log_id is None:
+        return None
+    config = LOG_TYPE_CONFIG.get(log_id)
+    return config["name"] if config else None

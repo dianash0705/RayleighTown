@@ -3,6 +3,10 @@ import json
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Any
+
+from event_parsers import parse_event_details
+from event_parsers.common import extract_endpoint_agent_metadata, normalize_payload
 
 EVENT_XML_NAMESPACE = {"e": "http://schemas.microsoft.com/win/2004/08/events/event"}
 
@@ -10,7 +14,6 @@ EVENT_XML_NAMESPACE = {"e": "http://schemas.microsoft.com/win/2004/08/events/eve
 def _system_time_to_epoch_ms(system_time_text: str) -> int:
     normalized = system_time_text.strip().replace("Z", "+00:00")
 
-    # fromisoformat supports up to 6 fractional second digits.
     if "." in normalized:
         main_part, _, remainder = normalized.partition(".")
         plus_idx = remainder.find("+")
@@ -31,14 +34,59 @@ def _json_time_to_epoch_ms(time_text: str) -> int:
     return _system_time_to_epoch_ms(time_text)
 
 
+def _build_ingested_event(
+    log_id: int,
+    native_event_id: int,
+    timestamp_ms: int,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    parsed_details = parse_event_details(log_id, native_event_id, record)
+    agent_hostname, agent_ip = extract_endpoint_agent_metadata(record)
+    return {
+        "timestamp_ms": timestamp_ms,
+        "native_event_id": native_event_id,
+        "raw_payload": record,
+        "parsed_details": parsed_details,
+        "hostname": agent_hostname,
+        "ip": agent_ip,
+    }
+
+
 def _extract_json_payload(record):
-    payload = record.get("result")
-    if isinstance(payload, dict):
-        return payload
-    return record
+    return normalize_payload(record)
 
 
-def _extract_json_events(log_path: Path, event_id_whitelist):
+def _evtx_event_data(root: ET.Element) -> dict[str, str]:
+    event_data: dict[str, str] = {}
+    for data_node in root.findall("./e:EventData/e:Data", namespaces=EVENT_XML_NAMESPACE):
+        name = data_node.attrib.get("Name")
+        value = data_node.text
+        if name and value is not None:
+            event_data[name] = value.strip()
+    return event_data
+
+
+def _evtx_to_payload(root: ET.Element) -> dict[str, Any]:
+    system = root.find("./e:System", namespaces=EVENT_XML_NAMESPACE)
+    event_id_text = system.findtext("e:EventID", namespaces=EVENT_XML_NAMESPACE) if system is not None else None
+    computer = system.findtext("e:Computer", namespaces=EVENT_XML_NAMESPACE) if system is not None else None
+    provider = None
+    if system is not None:
+        provider_node = system.find("e:Provider", namespaces=EVENT_XML_NAMESPACE)
+        if provider_node is not None:
+            provider = provider_node.attrib.get("Name")
+
+    payload: dict[str, Any] = {
+        "EventID": int(event_id_text) if event_id_text else None,
+        "Computer": computer,
+        "ProviderName": provider,
+        "EventData": _evtx_event_data(root),
+    }
+    payload.update(payload["EventData"])
+    return payload
+
+
+def _extract_json_events(log_path: Path, event_id_whitelist, log_id: int):
     events = []
     with log_path.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
@@ -80,12 +128,19 @@ def _extract_json_events(log_path: Path, event_id_whitelist):
             except ValueError:
                 continue
 
-            events.append((timestamp_ms, native_event_id))
+            events.append(
+                _build_ingested_event(
+                    log_id=log_id,
+                    native_event_id=native_event_id,
+                    timestamp_ms=timestamp_ms,
+                    record=record,
+                )
+            )
 
     return events
 
 
-def extract_windows_evtx_events(log_path: Path, event_id_whitelist):
+def extract_windows_evtx_events(log_path: Path, event_id_whitelist, log_id: int = 0):
     command = [
         "wevtutil",
         "qe",
@@ -135,18 +190,26 @@ def extract_windows_evtx_events(log_path: Path, event_id_whitelist):
         except ValueError:
             continue
 
-        events.append((timestamp_ms, native_event_id))
+        payload = _evtx_to_payload(root)
+        events.append(
+            _build_ingested_event(
+                log_id=log_id,
+                native_event_id=native_event_id,
+                timestamp_ms=timestamp_ms,
+                record=payload,
+            )
+        )
 
     return events
 
 
-def extract_windows_json_events(log_path: Path, event_id_whitelist):
-    return _extract_json_events(log_path, event_id_whitelist)
+def extract_windows_json_events(log_path: Path, event_id_whitelist, log_id: int = 0):
+    return _extract_json_events(log_path, event_id_whitelist, log_id)
 
 
-def extract_windows_events(log_path: Path, event_id_whitelist):
+def extract_windows_events(log_path: Path, event_id_whitelist, log_id: int = 0):
     suffix = log_path.suffix.lower()
     if suffix == ".json":
-        return extract_windows_json_events(log_path, event_id_whitelist)
+        return extract_windows_json_events(log_path, event_id_whitelist, log_id)
 
-    return extract_windows_evtx_events(log_path, event_id_whitelist)
+    return extract_windows_evtx_events(log_path, event_id_whitelist, log_id)

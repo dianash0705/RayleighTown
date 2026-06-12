@@ -1,28 +1,52 @@
 const form = document.getElementById("queryForm");
+const toggleFiltersButton = document.getElementById("toggleFilters");
+const timePresetInput = document.getElementById("timePreset");
+const timeFromWrap = document.getElementById("timeFromWrap");
+const timeToWrap = document.getElementById("timeToWrap");
+const timeFromInput = document.getElementById("timeFrom");
+const timeToInput = document.getElementById("timeTo");
 const endpointInput = document.getElementById("endpointID");
+const eventNameInput = document.getElementById("eventName");
+const nativeEventIDInput = document.getElementById("nativeEventID");
+const minConfidenceInput = document.getElementById("minConfidence");
+const resetFiltersButton = document.getElementById("resetFilters");
 const statusEl = document.getElementById("status");
 const summaryRow = document.getElementById("summaryRow");
 const chipAlertCount = document.getElementById("chipAlertCount");
-const chipWindowCount = document.getElementById("chipWindowCount");
+const chipHighConfidenceCount = document.getElementById("chipHighConfidenceCount");
 const chipPeriodCount = document.getElementById("chipPeriodCount");
-const chipEventCount = document.getElementById("chipEventCount");
+const chipEndpointCount = document.getElementById("chipEndpointCount");
 const table = document.getElementById("alertsTable");
 const tbody = table.querySelector("tbody");
 const sortableHeaders = Array.from(table.querySelectorAll("th.sortable"));
+const TABLE_COLSPAN = 7;
 
 let currentAlerts = [];
+let expandedAlertId = null;
 let sortState = {
-  key: "tsBegin",
-  direction: "asc",
+  key: "confidence",
+  direction: "desc",
 };
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 function getSortValue(alert, key) {
   const value = alert[key];
   if (value === null || value === undefined || value === "") {
-    return key === "nativeEventID" ? Number.MAX_SAFE_INTEGER : "";
+    if (key === "nativeEventID" || key === "alertID") {
+      return Number.MAX_SAFE_INTEGER;
+    }
+    return "";
   }
 
-  if (key === "endpointID") {
+  if (key === "endpointID" || key === "eventName") {
     return String(value).toLowerCase();
   }
 
@@ -73,16 +97,14 @@ function sortAndRenderAlerts() {
 }
 
 function updateSummary(alerts) {
-  const totalWindows = alerts.reduce((sum, alert) => {
-    return sum + (Array.isArray(alert.windows) ? alert.windows.length : 0);
-  }, 0);
   const uniquePeriods = new Set(alerts.map((alert) => alert.periodTs)).size;
-  const uniqueEventIDs = new Set(alerts.map((alert) => alert.nativeEventID)).size;
+  const uniqueEndpoints = new Set(alerts.map((alert) => alert.endpointID)).size;
+  const highConfidence = alerts.filter((alert) => Number(alert.confidence) >= 80).length;
 
   chipAlertCount.textContent = String(alerts.length);
-  chipWindowCount.textContent = String(totalWindows);
+  chipHighConfidenceCount.textContent = String(highConfidence);
   chipPeriodCount.textContent = String(uniquePeriods);
-  chipEventCount.textContent = String(uniqueEventIDs);
+  chipEndpointCount.textContent = String(uniqueEndpoints);
   summaryRow.hidden = alerts.length === 0;
 }
 
@@ -91,7 +113,7 @@ function setSort(key) {
     sortState.direction = sortState.direction === "asc" ? "desc" : "asc";
   } else {
     sortState.key = key;
-    sortState.direction = key === "tsBegin" ? "asc" : "desc";
+    sortState.direction = key === "confidence" || key === "tsEnd" ? "desc" : "asc";
   }
 
   sortAndRenderAlerts();
@@ -108,7 +130,7 @@ for (const header of sortableHeaders) {
   });
 }
 
-const timestampFormatter = new Intl.DateTimeFormat(undefined, {
+const timestampFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
@@ -119,18 +141,67 @@ const timestampFormatter = new Intl.DateTimeFormat(undefined, {
   hour12: false,
 });
 
-function formatTimestamp(value) {
+const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+
+function formatExactTimestamp(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
-    return value;
+    return String(value);
   }
 
   const date = new Date(number);
   if (Number.isNaN(date.getTime())) {
-    return value;
+    return String(value);
   }
 
   return timestampFormatter.format(date);
+}
+
+function formatRelativeTimestamp(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return String(value);
+  }
+
+  const date = new Date(number);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  const diffMs = date.getTime() - Date.now();
+  const absMs = Math.abs(diffMs);
+  const units = [
+    { unit: "day", ms: 24 * 60 * 60 * 1000 },
+    { unit: "hour", ms: 60 * 60 * 1000 },
+    { unit: "minute", ms: 60 * 1000 },
+    { unit: "second", ms: 1000 },
+  ];
+
+  for (const entry of units) {
+    if (absMs >= entry.ms || entry.unit === "second") {
+      const raw = diffMs / entry.ms;
+      const rounded = entry.unit === "second"
+        ? Math.round(raw)
+        : Math.round(raw * 10) / 10;
+      return relativeTimeFormatter.format(rounded, entry.unit);
+    }
+  }
+
+  return formatExactTimestamp(value);
+}
+
+function renderTimestampCell(value) {
+  const exact = formatExactTimestamp(value);
+  const relative = formatRelativeTimestamp(value);
+  const number = Number(value);
+  let iso = "";
+  if (Number.isFinite(number)) {
+    const date = new Date(number);
+    if (!Number.isNaN(date.getTime())) {
+      iso = date.toISOString();
+    }
+  }
+  return "<time class='timestamp-cell' datetime='" + escapeHtml(iso) + "' title='" + escapeHtml(exact) + "'>" + escapeHtml(relative) + "</time>";
 }
 
 function formatPeriod(value) {
@@ -183,68 +254,301 @@ function formatConfidence(value) {
   return Math.max(0, Math.min(100, Math.round(number))) + "%";
 }
 
-function formatWindowCount(count) {
-  return count === 1 ? "1 window" : count + " windows";
+function confidenceLevel(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "confidence-low";
+  }
+  if (number >= 80) {
+    return "confidence-high";
+  }
+  if (number >= 50) {
+    return "confidence-medium";
+  }
+  return "confidence-low";
 }
 
-function renderWindowCards(windows) {
-  if (!windows.length) {
-    return "-";
+function renderConfidenceBadge(value) {
+  const level = confidenceLevel(value);
+  return (
+    "<span class='confidence-badge " + level + "'>" +
+      confidenceIcon() +
+      "<span class='confidence-value'>" + formatConfidence(value) + "</span>" +
+    "</span>"
+  );
+}
+
+function renderEventCell(alert) {
+  const eventName = alert.eventName || ("Event " + alert.nativeEventID);
+  const eventId = alert.nativeEventID ?? "-";
+  const source = alert.logSource ? "<span class='event-source'>" + escapeHtml(alert.logSource) + "</span>" : "";
+  return (
+    "<div class='event-cell'>" +
+      "<span class='event-name'>" + escapeHtml(eventName) + "</span>" +
+      "<span class='event-id-label'>ID " + escapeHtml(eventId) + "</span>" +
+      source +
+    "</div>"
+  );
+}
+
+function renderEndpointLine(detail) {
+  const parts = ["Endpoint ID: " + escapeHtml(detail.endpointID)];
+  if (detail.hostname) {
+    parts.push(escapeHtml(detail.hostname));
+  }
+  if (detail.ip) {
+    parts.push(escapeHtml(detail.ip));
+  }
+  return parts.join(" · ");
+}
+
+function renderDetailFields(fields) {
+  if (!Array.isArray(fields) || !fields.length) {
+    return "<p class='detail-empty'>No parsed event fields available.</p>";
   }
 
-  return "<details><summary><span class='summary-row'><span class='window-pill'>" +
-    windows.length +
-    "</span><span class='summary-hint'>" +
-    formatWindowCount(windows.length) +
-    "</span><span class='summary-chevron'>▸</span></span></summary><div class='window-list'>" +
-    windows.map(function (windowAlert, index) {
-      const windowLabel = "Window " + (index + 1);
-      return "<div class='window-card'>" +
-        "<div class='window-card-header'>" +
-          "<div class='window-card-title'>" + windowLabel + "</div>" +
-          "<div class='window-card-meta'>Confidence " + formatConfidence(windowAlert.confidence) + "</div>" +
-        "</div>" +
-        "<div class='window-card-body'>" +
-          "<span class='time-range'>" + formatTimestamp(windowAlert.tsBegin) + " → " + formatTimestamp(windowAlert.tsEnd) + "</span>" +
-        "</div>" +
-      "</div>";
-    }).join("") +
-    "</div></details>";
+  return (
+    "<dl class='detail-grid'>" +
+      fields.map(function (item) {
+        const emphasis = item.emphasis ? " detail-emphasis" : "";
+        return (
+          "<div class='detail-item" + emphasis + "'>" +
+            "<dt>" + escapeHtml(item.label) + "</dt>" +
+            "<dd>" + escapeHtml(item.value) + "</dd>" +
+          "</div>"
+        );
+      }).join("") +
+    "</dl>"
+  );
 }
 
-function renderRows(alerts) {
-  tbody.innerHTML = "";
-  for (const alert of alerts) {
-    const tr = document.createElement("tr");
-    const windows = Array.isArray(alert.windows) ? alert.windows : [];
-    const windowsHtml = renderWindowCards(windows);
-    tr.innerHTML =
-      "<td>" + alert.alertID + "</td>" +
-      "<td>" + (alert.nativeEventID ?? "-") + "</td>" +
-      "<td>" + alert.endpointID + "</td>" +
-      "<td>" + formatTimestamp(alert.tsBegin) + "</td>" +
-      "<td>" + formatTimestamp(alert.tsEnd) + "</td>" +
-      "<td><span class='period-badge'>" + periodIcon() + formatPeriod(alert.periodTs) + "</span></td>" +
-      "<td><span class='confidence-badge'>" + confidenceIcon() + formatConfidence(alert.confidence) + "</span></td>" +
-      "<td>" + windowsHtml + "</td>";
-    tbody.appendChild(tr);
+function renderExpandedPanel(detail) {
+  const eventBits = [
+    escapeHtml(detail.eventName || ("Event " + detail.nativeEventID)),
+    "ID " + escapeHtml(detail.nativeEventID ?? "-"),
+    detail.logSource ? escapeHtml(detail.logSource) : null,
+  ].filter(Boolean);
+
+  const windows = Array.isArray(detail.windows) ? detail.windows : [];
+  const eventDetails = detail.eventDetails || {};
+  const contributingCount = detail.contributingEventCount || 0;
+
+  return (
+    "<div class='alert-detail-panel'>" +
+      "<section class='detail-section'>" +
+        "<h3>Endpoint</h3>" +
+        "<p class='detail-line'>" + renderEndpointLine(detail) + "</p>" +
+      "</section>" +
+      "<section class='detail-section'>" +
+        "<h3>Event</h3>" +
+        "<p class='detail-line'>" + eventBits.join(" · ") + "</p>" +
+        renderDetailFields(eventDetails.fields) +
+        "<p class='detail-meta'>" + contributingCount + " contributing event(s) stored for future series mapping.</p>" +
+      "</section>" +
+      "<section class='detail-section'>" +
+        "<h3>Contributing Windows (" + windows.length + ")</h3>" +
+        "<div class='window-list'>" +
+          windows.map(function (windowAlert, index) {
+            return (
+              "<div class='window-card'>" +
+                "<div class='window-card-header'>" +
+                  "<div class='window-card-title'>Window " + (index + 1) + "</div>" +
+                  "<div class='window-card-meta'>Confidence " + formatConfidence(windowAlert.confidence) + "</div>" +
+                "</div>" +
+                "<div class='window-card-body'>" +
+                  renderTimestampCell(windowAlert.tsBegin) +
+                  "<span class='time-separator'>→</span>" +
+                  renderTimestampCell(windowAlert.tsEnd) +
+                "</div>" +
+              "</div>"
+            );
+          }).join("") +
+        "</div>" +
+      "</section>" +
+    "</div>"
+  );
+}
+
+async function loadAlertDetail(alertId, detailRow) {
+  detailRow.innerHTML = "<td colspan='" + TABLE_COLSPAN + "'><div class='detail-loading'>Loading alert details...</div></td>";
+  try {
+    const response = await fetch("/api/alerts/" + encodeURIComponent(alertId));
+    const data = await response.json();
+    if (!response.ok) {
+      detailRow.innerHTML = "<td colspan='" + TABLE_COLSPAN + "'><div class='detail-error'>" + escapeHtml(data.error || "Failed to load details") + "</div></td>";
+      return;
+    }
+    detailRow.innerHTML = "<td colspan='" + TABLE_COLSPAN + "'>" + renderExpandedPanel(data) + "</td>";
+  } catch (error) {
+    detailRow.innerHTML = "<td colspan='" + TABLE_COLSPAN + "'><div class='detail-error'>Network error while loading details.</div></td>";
   }
-  table.hidden = alerts.length === 0;
 }
 
-form.addEventListener("submit", async function (event) {
-  event.preventDefault();
-  const endpointID = endpointInput.value.trim();
-  if (!endpointID) {
+function setRowExpandedState(row, expanded) {
+  row.classList.toggle("is-expanded", expanded);
+  row.setAttribute("aria-expanded", expanded ? "true" : "false");
+}
+
+function toggleExpandedRow(alertId, hostRow) {
+  const existingDetailRow = tbody.querySelector("tr.detail-row[data-alert-id='" + alertId + "']");
+  if (expandedAlertId === alertId) {
+    expandedAlertId = null;
+    if (existingDetailRow) {
+      existingDetailRow.remove();
+    }
+    setRowExpandedState(hostRow, false);
     return;
   }
 
+  for (const openRow of tbody.querySelectorAll("tr.detail-row")) {
+    openRow.remove();
+  }
+  for (const row of tbody.querySelectorAll("tr.alert-row.is-expanded")) {
+    setRowExpandedState(row, false);
+  }
+
+  expandedAlertId = alertId;
+  const detailRow = document.createElement("tr");
+  detailRow.className = "detail-row";
+  detailRow.dataset.alertId = String(alertId);
+  hostRow.insertAdjacentElement("afterend", detailRow);
+  setRowExpandedState(hostRow, true);
+  loadAlertDetail(alertId, detailRow);
+}
+
+function renderRows(alerts) {
+  expandedAlertId = null;
+  tbody.innerHTML = "";
+
+  for (const alert of alerts) {
+    const tr = document.createElement("tr");
+    tr.className = "alert-row";
+    tr.dataset.alertId = String(alert.alertID);
+    tr.setAttribute("role", "button");
+    tr.setAttribute("tabindex", "0");
+    tr.setAttribute("aria-expanded", "false");
+    tr.setAttribute("aria-label", "Alert " + alert.alertID + ", click to expand");
+    tr.innerHTML =
+      "<td>" + renderConfidenceBadge(alert.confidence) + "</td>" +
+      "<td>" + renderEventCell(alert) + "</td>" +
+      "<td>" + escapeHtml(alert.endpointID) + "</td>" +
+      "<td><span class='period-badge'>" + periodIcon() + formatPeriod(alert.periodTs) + "</span></td>" +
+      "<td>" + renderTimestampCell(alert.tsBegin) + "</td>" +
+      "<td>" + renderTimestampCell(alert.tsEnd) + "</td>" +
+      "<td>" + escapeHtml(alert.alertID) + "</td>";
+
+    tr.addEventListener("click", function () {
+      toggleExpandedRow(alert.alertID, tr);
+    });
+
+    tr.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggleExpandedRow(alert.alertID, tr);
+      }
+    });
+
+    tbody.appendChild(tr);
+  }
+
+  table.hidden = alerts.length === 0;
+}
+
+function updateCustomTimeVisibility() {
+  const isCustom = timePresetInput.value === "custom";
+  timeFromWrap.hidden = !isCustom;
+  timeToWrap.hidden = !isCustom;
+}
+
+function setFiltersExpanded(expanded) {
+  form.hidden = !expanded;
+  form.classList.toggle("is-collapsed", !expanded);
+  toggleFiltersButton.setAttribute("aria-expanded", expanded ? "true" : "false");
+  toggleFiltersButton.querySelector(".filter-toggle-label").textContent = expanded ? "Hide filters" : "Show filters";
+  toggleFiltersButton.querySelector(".filter-toggle-chevron").textContent = expanded ? "▾" : "▸";
+}
+
+timePresetInput.addEventListener("change", updateCustomTimeVisibility);
+
+toggleFiltersButton.addEventListener("click", function () {
+  setFiltersExpanded(form.classList.contains("is-collapsed"));
+});
+
+function toIsoFromLocalInput(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString();
+}
+
+function buildQueryParams() {
+  const params = new URLSearchParams();
+  params.set("timePreset", timePresetInput.value);
+  params.set("sort", sortState.key);
+  params.set("order", sortState.direction);
+
+  const endpointID = endpointInput.value.trim();
+  const eventName = eventNameInput.value.trim();
+  const nativeEventID = nativeEventIDInput.value.trim();
+  const minConfidence = minConfidenceInput.value.trim();
+
+  if (endpointID) {
+    params.set("endpointID", endpointID);
+  }
+  if (eventName) {
+    params.set("eventName", eventName);
+  }
+  if (nativeEventID) {
+    params.set("nativeEventID", nativeEventID);
+  }
+  if (minConfidence) {
+    params.set("minConfidence", minConfidence);
+  }
+
+  if (timePresetInput.value === "custom") {
+    const timeFrom = toIsoFromLocalInput(timeFromInput.value);
+    const timeTo = toIsoFromLocalInput(timeToInput.value);
+    if (timeFrom) {
+      params.set("timeFrom", timeFrom);
+    }
+    if (timeTo) {
+      params.set("timeTo", timeTo);
+    }
+  }
+
+  return params;
+}
+
+async function loadMeta() {
+  try {
+    const response = await fetch("/api/meta");
+    const data = await response.json();
+    if (!response.ok) {
+      return;
+    }
+
+    for (const eventName of data.eventNames || []) {
+      const option = document.createElement("option");
+      option.value = eventName;
+      option.textContent = eventName;
+      eventNameInput.appendChild(option);
+    }
+  } catch (error) {
+    // Meta is optional for rendering.
+  }
+}
+
+async function loadAlerts() {
   statusEl.textContent = "Loading...";
   table.hidden = true;
   tbody.innerHTML = "";
 
   try {
-    const response = await fetch("/api/alerts?endpointID=" + encodeURIComponent(endpointID));
+    const response = await fetch("/api/alerts?" + buildQueryParams().toString());
     const data = await response.json();
 
     if (!response.ok) {
@@ -258,5 +562,29 @@ form.addEventListener("submit", async function (event) {
     sortAndRenderAlerts();
   } catch (error) {
     statusEl.textContent = "Network error";
+    summaryRow.hidden = true;
   }
+}
+
+form.addEventListener("submit", function (event) {
+  event.preventDefault();
+  loadAlerts();
 });
+
+resetFiltersButton.addEventListener("click", function () {
+  timePresetInput.value = "all";
+  timeFromInput.value = "";
+  timeToInput.value = "";
+  endpointInput.value = "";
+  eventNameInput.value = "";
+  nativeEventIDInput.value = "";
+  minConfidenceInput.value = "";
+  sortState = { key: "confidence", direction: "desc" };
+  updateCustomTimeVisibility();
+  loadAlerts();
+});
+
+updateCustomTimeVisibility();
+setFiltersExpanded(false);
+loadMeta();
+loadAlerts();

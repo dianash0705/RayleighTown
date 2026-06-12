@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RayleighTown Alerts Viewer (POC)</title>
-  
+  <title>RayleighTown Alerts Viewer</title>
+
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -19,23 +19,73 @@
           </span>
           <h2>RayleighTown Alerts Viewer</h2>
         </div>
-        <p class="subtitle">Explore deduped alert groups, inspect their contributing windows, and sort by any major signal to follow the strongest periodic activity.</p>
+        <p class="subtitle">Triage periodic alert groups across endpoints. Filter by any signal, sort by confidence, and inspect contributing events.</p>
+      </div>
+    </div>
+
+    <div class="filter-shell">
+      <button type="button" id="toggleFilters" class="filter-toggle" aria-expanded="false" aria-controls="queryForm">
+        <span class="filter-toggle-label">Show filters</span>
+        <span class="filter-toggle-chevron" aria-hidden="true">▸</span>
+      </button>
+
+      <form id="queryForm" class="filter-panel" hidden>
+      <div class="filter-grid">
+        <label>
+          Time range
+          <select id="timePreset">
+            <option value="all" selected>All time</option>
+            <option value="last_24h">Last 24 hours</option>
+            <option value="last_week">Last week</option>
+            <option value="custom">Custom range</option>
+          </select>
+        </label>
+
+        <label class="custom-time-field" id="timeFromWrap" hidden>
+          From
+          <input id="timeFrom" type="datetime-local" />
+        </label>
+
+        <label class="custom-time-field" id="timeToWrap" hidden>
+          To
+          <input id="timeTo" type="datetime-local" />
+        </label>
+
+        <label>
+          Endpoint ID
+          <input id="endpointID" placeholder="Any" />
+        </label>
+
+        <label>
+          Event
+          <select id="eventName">
+            <option value="">Any</option>
+          </select>
+        </label>
+
+        <label>
+          Event ID
+          <input id="nativeEventID" type="number" min="0" placeholder="Any" />
+        </label>
+
+        <label>
+          Min confidence
+          <input id="minConfidence" type="number" min="0" max="100" placeholder="Any" />
+        </label>
       </div>
 
-      <form id="queryForm">
-        <label>
-          Endpoint ID:
-          <input id="endpointID" value="123" placeholder="e.g. 123" required />
-        </label>
-        <button type="submit">Load Alerts</button>
+      <div class="filter-actions">
+        <button type="submit">Apply Filters</button>
+        <button type="button" id="resetFilters" class="secondary-button">Reset</button>
+      </div>
       </form>
     </div>
 
     <div class="chip-row" id="summaryRow" hidden>
       <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 3 6v6c0 5 3.4 9.7 9 10 5.6-.3 9-5 9-10V6l-9-4zm0 3.2 5 2.2V12c0 3.8-2.3 7.2-5 7.9-2.7-.7-5-4.1-5-7.9V7.4l5-2.2z"/></svg></span><span>Alerts</span> <strong id="chipAlertCount">0</strong></div>
-      <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 4h18v2H3V4zm2 4h14v12H5V8zm2 2v8h10v-8H7zm2 2h6v2H9v-2z"/></svg></span><span>Windows</span> <strong id="chipWindowCount">0</strong></div>
+      <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 3 6 3.3V15l-6 3.3L6 15V8.3L12 5z"/></svg></span><span>High confidence</span> <strong id="chipHighConfidenceCount">0</strong></div>
       <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7V3zm1 4h-2v6l5 3 1-1.7-4-2.3V7z"/></svg></span><span>Periods</span> <strong id="chipPeriodCount">0</strong></div>
-      <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h10v4h4v14H3V3h4zm2 2v2h6V5H9zm-4 4v10h14V9H5zm2 2h2v2H7v-2zm4 0h6v2h-6v-2zm-4 4h10v2H7v-2z"/></svg></span><span>Event IDs</span> <strong id="chipEventCount">0</strong></div>
+      <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h10v4h4v14H3V3h4zm2 2v2h6V5H9zm-4 4v10h14V9H5zm2 2h2v2H7v-2zm4 0h6v2h-6v-2zm-4 4h10v2H7v-2z"/></svg></span><span>Endpoints</span> <strong id="chipEndpointCount">0</strong></div>
     </div>
 
     <div id="status"></div>
@@ -44,25 +94,23 @@
       <div class="table-scroll">
         <table id="alertsTable" hidden>
           <colgroup>
-            <col class="col-alert-id" />
-            <col class="col-event-id" />
+            <col class="col-confidence" />
+            <col class="col-event" />
             <col class="col-endpoint" />
+            <col class="col-period" />
             <col class="col-start" />
             <col class="col-end" />
-            <col class="col-period" />
-            <col class="col-confidence" />
-            <col class="col-windows" />
+            <col class="col-alert-id" />
           </colgroup>
           <thead>
             <tr>
-              <th class="sortable" data-sort-key="alertID"><button type="button">Alert ID <span class="sort-indicator"></span></button></th>
-              <th class="sortable" data-sort-key="nativeEventID"><button type="button">Event ID <span class="sort-indicator"></span></button></th>
-              <th class="sortable" data-sort-key="endpointID"><button type="button">Endpoint <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="confidence"><button type="button">Confidence <span class="sort-indicator">▼</span></button></th>
+              <th class="sortable" data-sort-key="eventName"><button type="button">Event <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="endpointID"><button type="button">Endpoint ID <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="periodTs"><button type="button">Period <span class="sort-indicator"></span></button></th>
               <th class="sortable" data-sort-key="tsBegin"><button type="button">Start Time <span class="sort-indicator"></span></button></th>
               <th class="sortable" data-sort-key="tsEnd"><button type="button">End Time <span class="sort-indicator"></span></button></th>
-              <th class="sortable" data-sort-key="periodTs"><button type="button">Period <span class="sort-indicator"></span></button></th>
-              <th class="sortable" data-sort-key="confidence"><button type="button">Confidence <span class="sort-indicator"></span></button></th>
-              <th>Windows</th>
+              <th class="sortable" data-sort-key="alertID"><button type="button">Alert ID <span class="sort-indicator"></span></button></th>
             </tr>
           </thead>
           <tbody></tbody>
