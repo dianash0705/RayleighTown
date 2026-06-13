@@ -6,7 +6,7 @@ from uuid import uuid4
 from flask import jsonify, redirect, request, send_from_directory
 from werkzeug.utils import secure_filename
 
-from alert_filters import build_alert_filters
+from alert_filters import build_alert_filters, resolve_time_window
 from config import UPLOAD_DIR
 from database import fetch_alert_detail, fetch_alerts, fetch_dashboard_stats, fetch_entities, insert_events, upsert_endpoint
 from log_registry import LOG_TYPE_CONFIG, LOG_SOURCE_MAP, all_event_names
@@ -110,6 +110,10 @@ def register_routes(app):
     def relative_time_js():
         return send_from_directory(STATIC_DIR, "relative_time.js")
 
+    @app.get("/time_range.js")
+    def time_range_js():
+        return send_from_directory(STATIC_DIR, "time_range.js")
+
     @app.get("/entities")
     def entities_page():
         return send_from_directory(STATIC_DIR, "entities.html")
@@ -124,7 +128,10 @@ def register_routes(app):
 
     @app.get("/api/dashboard")
     def get_dashboard():
-        return jsonify(fetch_dashboard_stats()), 200
+        window_start_ms, window_end_ms, time_preset = resolve_time_window(request.args)
+        return jsonify(
+            fetch_dashboard_stats(window_start_ms, window_end_ms, time_preset)
+        ), 200
 
     @app.get("/api/meta")
     def get_meta():
@@ -142,27 +149,38 @@ def register_routes(app):
 
     @app.get("/api/entities")
     def get_entities():
-        payload = fetch_entities()
+        window_start_ms, window_end_ms, time_preset = resolve_time_window(request.args)
+        payload = fetch_entities(window_start_ms, window_end_ms, time_preset)
         return jsonify(
             {
                 "count": len(payload["entities"]),
                 "windowStart": payload["windowStart"],
                 "windowEnd": payload["windowEnd"],
+                "timePreset": payload["timePreset"],
                 "entities": payload["entities"],
             }
         ), 200
 
     @app.get("/api/alerts")
     def get_alerts():
-        filters = build_alert_filters(request.args)
+        try:
+            filters = build_alert_filters(request.args)
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
         alerts = fetch_alerts(filters)
         return jsonify(
             {
                 "count": len(alerts),
                 "filters": {
-                    "endpointID": filters.endpoint_id,
-                    "nativeEventID": filters.native_event_id,
-                    "eventName": filters.event_name,
+                    "rules": [
+                        {
+                            "field": rule.field,
+                            "operator": rule.operator,
+                            "value": rule.value,
+                            **({"values": list(rule.values)} if rule.values else {}),
+                        }
+                        for rule in filters.rules
+                    ],
                     "minConfidence": filters.min_confidence,
                     "timePreset": request.args.get("timePreset"),
                     "timeFrom": filters.window_start_ms,

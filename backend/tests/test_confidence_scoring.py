@@ -15,13 +15,13 @@ from fourier import evaluate_period, fourier_transform, get_median_value
 from tests.helpers import make_periodic_timestamps_ms
 
 
-def _window_breakdown(confidence: int) -> WindowConfidenceBreakdown:
+def _window_breakdown(confidence: int, base_peak: float = 56.0) -> WindowConfidenceBreakdown:
     return WindowConfidenceBreakdown(
         peak_magnitude=0.8,
         median=0.05,
         mad=0.02,
         snr=5.0,
-        base_peak=56.0,
+        base_peak=base_peak,
         snr_bonus=5.0,
         harmonic_bonus=3.0,
         phase_bonus=2.0,
@@ -183,6 +183,41 @@ class TestGroupConfidence:
         )
 
         assert aligned.phase_consistency_bonus > misaligned.phase_consistency_bonus
+
+
+@pytest.mark.unit
+class TestSingleWindowPenalty:
+    def test_weak_single_window_is_penalized_and_capped(self):
+        lone = compute_group_confidence(
+            [
+                build_window_snapshot(
+                    ts_begin=0,
+                    ts_end=900_000,
+                    period_ts=60_000.0,
+                    phase=0.0,
+                    breakdown=_window_breakdown(74, base_peak=50.0),
+                )
+            ]
+        )
+
+        assert lone.window_count == 1
+        assert lone.final_confidence <= 62
+
+    def test_strong_single_window_still_gets_penalty_but_can_remain_useful(self):
+        lone = compute_group_confidence(
+            [
+                build_window_snapshot(
+                    ts_begin=0,
+                    ts_end=900_000,
+                    period_ts=60_000.0,
+                    phase=0.0,
+                    breakdown=_window_breakdown(92, base_peak=88.0),
+                )
+            ]
+        )
+
+        assert lone.final_confidence < 92
+        assert lone.final_confidence >= 75
 
 
 @pytest.mark.unit

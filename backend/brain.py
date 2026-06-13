@@ -16,9 +16,12 @@ from fourier import (
     filter_by_harmony,
     get_candidate_period_groups_ms,
     resolve_superharmonic_canonical_period,
+    resolve_subharmonic_alias_period,
+    period_supported_by_event_spacing,
 )
 from config import CONFIDENCE_SCORING_CONFIG, HARMONIC_ANALYSIS_CONFIG
 from confidence_log import log_confidence_event
+from event_matching import MatchedEvent, match_events_to_alert
 from confidence_scoring import (
     ConfidenceBreakdown,
     WindowSnapshot,
@@ -42,12 +45,16 @@ class EventRecord:
 class AlertRecord:
     endpoint_id: str
     native_event_id: int
-    event_ids: list[int]
+    matched_events: tuple[MatchedEvent, ...]
     ts_begin: int = UNKNOWN_TIMESTAMP_MS
     ts_end: int = UNKNOWN_TIMESTAMP_MS
     period_ts: float = math.nan
     confidence: int = UNKNOWN_CONFIDENCE
     phase: float = math.nan
+
+    @property
+    def event_ids(self) -> list[int]:
+        return [matched_event.internal_event_id for matched_event in self.matched_events]
 
 
 @dataclass(frozen=True)
@@ -495,6 +502,21 @@ def build_fourier_alert_from_sorted_timestamps_ms(
             phase = canonical.phase
             phase_by_period[period_ms] = phase
 
+        alias = resolve_subharmonic_alias_period(
+            period_ms,
+            peak_magnitude,
+            timestamp_floats,
+            phase=phase,
+        )
+        if alias.canonicalized:
+            period_ms = alias.period_ms
+            peak_magnitude = alias.peak_magnitude
+            phase = alias.phase
+            phase_by_period[period_ms] = phase
+
+        if not period_supported_by_event_spacing(period_ms, timestamp_floats):
+            continue
+
         window_breakdown = compute_window_confidence(
             period_ms,
             peak_magnitude,
@@ -616,10 +638,22 @@ def build_alerts_for_endpoint(
                     },
                 )
 
+            candidate_events = [
+                (event.internal_event_id, event.timestamp_ms)
+                for event in native_events
+            ]
+            matched_events = match_events_to_alert(
+                candidate_events,
+                ts_begin_ms=alert_core.ts_begin,
+                ts_end_ms=alert_core.ts_end,
+                period_ms=alert_core.period_ts,
+                phase_rad=alert_core.phase,
+            )
+
             alert_record = AlertRecord(
                 endpoint_id=endpoint_id,
                 native_event_id=native_event_id,
-                event_ids=[event.internal_event_id for event in native_events],
+                matched_events=matched_events,
                 ts_begin=alert_core.ts_begin,
                 ts_end=alert_core.ts_end,
                 period_ts=alert_core.period_ts,
@@ -629,7 +663,6 @@ def build_alerts_for_endpoint(
             alert_key = (
                 alert_record.endpoint_id,
                 alert_record.native_event_id,
-                tuple(alert_record.event_ids),
                 alert_record.ts_begin,
                 alert_record.ts_end,
                 alert_record.period_ts,

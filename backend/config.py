@@ -83,6 +83,18 @@ class HarmonicAnalysisConfig:
 	superharmonic_half_strength_ratio: float = 1.25
 	superharmonic_weak_double_ratio: float = 0.55
 
+	# Prefer the longest strong harmonic multiple (e.g. 5 min over 1 min alias).
+	# Disabled by default: stepping up can suppress genuine shorter periods when
+	# longer harmonics are accidentally strengthened by noise or overlapping signals.
+	subharmonic_alias_resolution_enabled: bool = False
+	subharmonic_alias_min_magnitude_ratio: float = 0.92
+	subharmonic_alias_max_multiplier: int = 30
+	# Reject detections that collapse to one instant (not enough distinct timestamps).
+	min_unique_timestamps_for_period: int = 3
+	# Soft confidence penalty when period is much shorter than median event spacing.
+	min_period_to_median_gap_ratio: float = 0.45
+	max_spacing_alias_penalty: float = 22.0
+
 
 HARMONIC_ANALYSIS_CONFIG = HarmonicAnalysisConfig()
 
@@ -130,8 +142,9 @@ class ConfidenceScoringConfig:
 	phase_penalty_threshold: float = 0.45
 	# Lone window detections without merge corroboration — modest cap when base is
 	# not clearly dominant (reduces pure-noise single-window false highs).
-	uncorroborated_single_window_cap: float = 74.0
-	uncorroborated_single_window_base_threshold: float = 70.0
+	uncorroborated_single_window_cap: float = 62.0
+	uncorroborated_single_window_base_threshold: float = 84.0
+	single_window_confidence_penalty: float = 10.0
 
 	# Logging
 	confidence_logging_enabled: bool = True
@@ -140,6 +153,20 @@ class ConfidenceScoringConfig:
 CONFIDENCE_SCORING_CONFIG = ConfidenceScoringConfig()
 CONFIDENCE_LOG_DIR = BASE_DIR / "logs" / "confidence"
 BENCHMARK_LOGS_CONFIG_PATH = BASE_DIR / "benchmark_logs.json"
+BENCHMARK_EXPECTATIONS_PATH = BASE_DIR / "benchmark_expectations.yaml"
+
+
+@dataclass(frozen=True)
+class EventMatchingConfig:
+	"""Settings for assigning log events to periodic window alerts."""
+
+	# Gaussian jitter tolerance when scoring distance to the nearest expected tick.
+	jitter_sigma_ms: float = 500.0
+	# Minimum per-event match confidence (0-100) stored in eventAlertMap.
+	min_match_confidence: int = 25
+
+
+EVENT_MATCHING_CONFIG = EventMatchingConfig()
 
 # Backward-compatible aliases for existing imports.
 GHOST_PEAK_SUPPRESSION_ENABLED = HARMONIC_ANALYSIS_CONFIG.ghost_suppression_enabled

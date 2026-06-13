@@ -2,7 +2,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from alert_filters import AlertQueryFilters, native_event_ids_for_filters
+from alert_filters import AlertQueryFilters, apply_filter_rules
 from brain import EventRecord, run_brain_for_endpoint
 from config import DB_PATH, PHASE_GHOST_SUPPRESSION_ENABLED, PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD
 from event_parsers.common import extract_endpoint_agent_metadata
@@ -24,6 +24,58 @@ def _phase_similarity(left_phase: float, right_phase: float) -> float:
     import math
 
     return math.cos(left_phase - right_phase)
+
+
+def _compute_overview_time_span(
+    *,
+    log_min_ms: int | None,
+    log_max_ms: int | None,
+    activity_min_ms: int,
+    activity_max_ms: int,
+) -> dict[str, int | str]:
+    """Build a wide overview axis: prefer full log span, with sensible minimum padding."""
+    one_day_ms = 24 * 60 * 60 * 1000
+    two_weeks_ms = 14 * one_day_ms
+
+    if (
+        log_min_ms is not None
+        and log_max_ms is not None
+        and log_max_ms > log_min_ms
+    ):
+        ts_begin = int(log_min_ms)
+        ts_end = int(log_max_ms)
+        source = "log"
+    else:
+        ts_begin = int(activity_min_ms)
+        ts_end = int(activity_max_ms)
+        source = "activity"
+
+    if ts_end <= ts_begin:
+        center = int((activity_min_ms + activity_max_ms) / 2)
+        ts_begin = center - one_day_ms // 2
+        ts_end = center + one_day_ms // 2
+        source = "padded_day"
+
+    span_ms = ts_end - ts_begin
+    center = int((activity_min_ms + activity_max_ms) / 2)
+
+    if span_ms < one_day_ms:
+        half = one_day_ms // 2
+        ts_begin = center - half
+        ts_end = center + half
+        source = "padded_day"
+    elif source != "log" and span_ms < two_weeks_ms:
+        half = two_weeks_ms // 2
+        ts_begin = center - half
+        ts_end = center + half
+        source = "padded_two_weeks"
+
+    margin_ms = max(int((ts_end - ts_begin) * 0.02), 60_000)
+    return {
+        "tsBegin": ts_begin - margin_ms,
+        "tsEnd": ts_end + margin_ms,
+        "source": source,
+    }
 
 
 def init_db():
@@ -320,7 +372,7 @@ def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
             }
         )
 
-        for event_id in alert.event_ids:
+        for matched_event in alert.matched_events:
             cursor.execute(
                 """
                 INSERT INTO eventAlertMap (
@@ -329,7 +381,7 @@ def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
                     confidence
                 ) VALUES (?, ?, ?)
                 """,
-                (event_id, alert_id, alert.confidence),
+                (matched_event.internal_event_id, alert_id, matched_event.confidence),
             )
 
     grouped_alerts: list[dict] = []
@@ -465,30 +517,7 @@ def fetch_alerts(filters: AlertQueryFilters):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    where_clauses = []
-    params: list = []
-
-    if filters.endpoint_id:
-        where_clauses.append("g.endpointID = ?")
-        params.append(filters.endpoint_id)
-
-    native_event_ids = native_event_ids_for_filters(filters)
-    if native_event_ids is not None:
-        if not native_event_ids:
-            conn.close()
-            return []
-        placeholders = ", ".join("?" for _ in native_event_ids)
-        where_clauses.append(f"g.nativeEventID IN ({placeholders})")
-        params.extend(sorted(native_event_ids))
-
-    if filters.min_confidence is not None:
-        where_clauses.append("g.confidence >= ?")
-        params.append(filters.min_confidence)
-
-    if filters.window_start_ms is not None and filters.window_end_ms is not None:
-        where_clauses.append("g.tsBegin <= ?")
-        where_clauses.append("g.tsEnd >= ?")
-        params.extend([filters.window_end_ms, filters.window_start_ms])
+    where_clauses, params = apply_filter_rules(filters)
 
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
@@ -609,58 +638,102 @@ def fetch_alert_detail(alert_group_id: int):
     )
     window_rows = cursor.fetchall()
 
+    windows = []
+    stored_events = []
+    representative_event = None
+
+    for row in window_rows:
+        alert_id = row[0]
+        cursor.execute(
+            """
+            SELECT
+                l.internalEventID,
+                l.timestamp,
+                l.logID,
+                l.nativeEventID,
+                l.rawPayload,
+                l.parsedDetails,
+                eam.confidence
+            FROM eventAlertMap eam
+            JOIN logs l ON l.internalEventID = eam.eventID
+            WHERE eam.alertID = ?
+            ORDER BY l.timestamp ASC, l.internalEventID ASC
+            """,
+            (alert_id,),
+        )
+        matched_events = []
+        for event_row in cursor.fetchall():
+            parsed_details = json.loads(event_row[5] or "{}")
+            raw_payload = json.loads(event_row[4] or "{}")
+            event_item = {
+                "internalEventID": event_row[0],
+                "timestamp": event_row[1],
+                "logID": event_row[2],
+                "nativeEventID": event_row[3],
+                "parsedDetails": parsed_details,
+                "identity": parsed_details.get("identity", {}),
+                "rawPayload": raw_payload,
+                "matchConfidence": int(event_row[6]),
+            }
+            matched_events.append(event_item)
+            stored_events.append(event_item)
+            if representative_event is None:
+                representative_event = event_item
+
+        windows.append(
+            {
+                "alertID": alert_id,
+                "tsBegin": row[1],
+                "tsEnd": row[2],
+                "confidence": row[3],
+                "phase": row[4],
+                "matchedEvents": matched_events,
+                "matchedEventCount": len(matched_events),
+            }
+        )
+
+    endpoint_id = group_row[1]
+    native_event_id = group_row[2]
+    activity_min_ms = min(
+        int(group_row[3]),
+        *(int(row[1]) for row in window_rows),
+    )
+    activity_max_ms = max(
+        int(group_row[4]),
+        *(int(row[2]) for row in window_rows),
+    )
+
     cursor.execute(
         """
-        SELECT
-            l.internalEventID,
-            l.timestamp,
-            l.logID,
-            l.nativeEventID,
-            l.rawPayload,
-            l.parsedDetails
-        FROM logs l
-        JOIN alertGroups g ON g.endpointID = l.endpointID
-        JOIN eventAlertMap eam ON eam.eventID = l.internalEventID
-        JOIN alertGroupMap agm ON agm.alertID = eam.alertID AND agm.alertGroupID = g.alertGroupID
-        WHERE g.alertGroupID = ?
-        ORDER BY l.timestamp ASC
+        SELECT MIN(timestamp), MAX(timestamp)
+        FROM logs
+        WHERE endpointID = ?
+          AND nativeEventID = ?
         """,
-        (alert_group_id,),
+        (endpoint_id, native_event_id),
     )
-    event_rows = cursor.fetchall()
+    log_bounds = cursor.fetchone()
+    log_min_ms = int(log_bounds[0]) if log_bounds and log_bounds[0] is not None else None
+    log_max_ms = int(log_bounds[1]) if log_bounds and log_bounds[1] is not None else None
+
+    overview_context = _compute_overview_time_span(
+        log_min_ms=log_min_ms,
+        log_max_ms=log_max_ms,
+        activity_min_ms=activity_min_ms,
+        activity_max_ms=activity_max_ms,
+    )
+
     conn.close()
 
     log_id = group_row[8]
-    native_event_id = group_row[2]
-    representative_event = None
-    stored_events = []
 
-    for event_row in event_rows:
-        parsed_details = json.loads(event_row[5] or "{}")
-        raw_payload = json.loads(event_row[4] or "{}")
-        event_item = {
-            "internalEventID": event_row[0],
-            "timestamp": event_row[1],
-            "logID": event_row[2],
-            "nativeEventID": event_row[3],
-            "parsedDetails": parsed_details,
-            "identity": parsed_details.get("identity", {}),
-            "rawPayload": raw_payload,
-        }
-        stored_events.append(event_item)
-        if representative_event is None:
-            representative_event = event_item
-
-    windows = [
-        {
-            "alertID": row[0],
-            "tsBegin": row[1],
-            "tsEnd": row[2],
-            "confidence": row[3],
-            "phase": row[4],
-        }
-        for row in window_rows
-    ]
+    deduped_events: dict[int, dict] = {}
+    for event_item in stored_events:
+        event_id = event_item["internalEventID"]
+        existing = deduped_events.get(event_id)
+        if existing is None or event_item["matchConfidence"] > existing["matchConfidence"]:
+            deduped_events[event_id] = event_item
+    stored_events = sorted(deduped_events.values(), key=lambda item: (item["timestamp"], item["internalEventID"]))
 
     alert = _serialize_alert_group_row(group_row, windows)
     if not alert.get("hostname") or not alert.get("ip"):
@@ -677,16 +750,77 @@ def fetch_alert_detail(alert_group_id: int):
     alert["contributingEvents"] = stored_events
     alert["contributingEventCount"] = len(stored_events)
     alert["eventDetails"] = representative_event["parsedDetails"] if representative_event else None
+    alert["overviewContext"] = overview_context
     return alert
 
 
-def fetch_entities():
+def _effective_query_window(
+    cursor,
+    window_start_ms: int | None,
+    window_end_ms: int | None,
+    now_ms: int,
+) -> tuple[int, int]:
+    if window_start_ms is not None and window_end_ms is not None:
+        return int(window_start_ms), int(window_end_ms)
+
+    cursor.execute("SELECT MIN(tsBegin), MAX(tsEnd) FROM alertGroups")
+    row = cursor.fetchone()
+    if row and row[0] is not None and row[1] is not None and int(row[1]) > int(row[0]):
+        return int(row[0]), int(row[1])
+
+    return int((datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc) - timedelta(days=7)).timestamp() * 1000), now_ms
+
+
+def _timeline_buckets(window_start_ms: int, window_end_ms: int) -> list[dict]:
+    span_ms = window_end_ms - window_start_ms
+    if span_ms <= 0:
+        return []
+
+    one_day_ms = 24 * 60 * 60 * 1000
+    start_dt = datetime.fromtimestamp(window_start_ms / 1000, tz=timezone.utc)
+    end_dt = datetime.fromtimestamp(window_end_ms / 1000, tz=timezone.utc)
+
+    if span_ms <= 14 * one_day_ms:
+        bucket_start = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        buckets: list[dict] = []
+        while bucket_start.timestamp() * 1000 <= window_end_ms:
+            bucket_end_dt = bucket_start + timedelta(days=1) - timedelta(milliseconds=1)
+            buckets.append(
+                {
+                    "bucketStart": int(bucket_start.timestamp() * 1000),
+                    "bucketEnd": int(bucket_end_dt.timestamp() * 1000),
+                    "label": bucket_start.strftime("%a %m/%d"),
+                }
+            )
+            bucket_start += timedelta(days=1)
+        return buckets[-14:] if len(buckets) > 14 else buckets
+
+    bucket_start = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    buckets = []
+    while bucket_start.timestamp() * 1000 <= window_end_ms:
+        bucket_end_dt = bucket_start + timedelta(days=7) - timedelta(milliseconds=1)
+        buckets.append(
+            {
+                "bucketStart": int(bucket_start.timestamp() * 1000),
+                "bucketEnd": int(bucket_end_dt.timestamp() * 1000),
+                "label": bucket_start.strftime("%b %d"),
+            }
+        )
+        bucket_start += timedelta(days=7)
+    return buckets[-12:] if len(buckets) > 12 else buckets
+
+
+def fetch_entities(
+    window_start_ms: int | None = None,
+    window_end_ms: int | None = None,
+    time_preset: str = "last_week",
+):
     now = datetime.now(timezone.utc)
-    window_end_ms = int(now.timestamp() * 1000)
-    window_start_ms = int((now - timedelta(days=7)).timestamp() * 1000)
+    now_ms = int(now.timestamp() * 1000)
 
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    effective_start_ms, effective_end_ms = _effective_query_window(cursor, window_start_ms, window_end_ms, now_ms)
     cursor.execute(
         """
         SELECT
@@ -710,7 +844,7 @@ def fetch_entities():
         ) counts ON counts.endpointID = base.endpointID
         ORDER BY alertsLastWeek DESC, base.endpointID ASC
         """,
-        (window_end_ms, window_start_ms),
+        (effective_end_ms, effective_start_ms),
     )
     rows = cursor.fetchall()
     conn.close()
@@ -723,12 +857,14 @@ def fetch_entities():
                 "name": hostname,
                 "ip": ip,
                 "alertsLastWeek": int(alerts_last_week),
+                "alertCount": int(alerts_last_week),
             }
         )
 
     return {
-        "windowStart": window_start_ms,
-        "windowEnd": window_end_ms,
+        "windowStart": effective_start_ms,
+        "windowEnd": effective_end_ms,
+        "timePreset": time_preset,
         "entities": entities,
     }
 
@@ -747,18 +883,22 @@ def _count_overlapping_alert_groups(cursor, window_start_ms: int, window_end_ms:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def fetch_dashboard_stats():
+def fetch_dashboard_stats(
+    window_start_ms: int | None = None,
+    window_end_ms: int | None = None,
+    time_preset: str = "last_week",
+):
     now = datetime.now(timezone.utc)
     now_ms = int(now.timestamp() * 1000)
     last_24h_start_ms = int((now - timedelta(hours=24)).timestamp() * 1000)
-    last_week_start_ms = int((now - timedelta(days=7)).timestamp() * 1000)
 
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    effective_start_ms, effective_end_ms = _effective_query_window(cursor, window_start_ms, window_end_ms, now_ms)
 
     active_now = _count_overlapping_alert_groups(cursor, now_ms, now_ms)
     active_last_24h = _count_overlapping_alert_groups(cursor, last_24h_start_ms, now_ms)
-    active_last_week = _count_overlapping_alert_groups(cursor, last_week_start_ms, now_ms)
+    active_in_window = _count_overlapping_alert_groups(cursor, effective_start_ms, effective_end_ms)
 
     cursor.execute(
         """
@@ -768,25 +908,14 @@ def fetch_dashboard_stats():
           AND tsEnd >= ?
           AND confidence >= 80
         """,
-        (now_ms, last_week_start_ms),
+        (effective_end_ms, effective_start_ms),
     )
-    high_confidence_last_week = int(cursor.fetchone()[0])
+    high_confidence_in_window = int(cursor.fetchone()[0])
 
     timeline = []
-    for day_offset in range(6, -1, -1):
-        day_start = (now - timedelta(days=day_offset)).replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1) - timedelta(milliseconds=1)
-        bucket_start_ms = int(day_start.timestamp() * 1000)
-        bucket_end_ms = int(day_end.timestamp() * 1000)
-        count = _count_overlapping_alert_groups(cursor, bucket_start_ms, bucket_end_ms)
-        timeline.append(
-            {
-                "bucketStart": bucket_start_ms,
-                "bucketEnd": bucket_end_ms,
-                "label": day_start.strftime("%a %m/%d"),
-                "count": count,
-            }
-        )
+    for bucket in _timeline_buckets(effective_start_ms, effective_end_ms):
+        count = _count_overlapping_alert_groups(cursor, bucket["bucketStart"], bucket["bucketEnd"])
+        timeline.append({**bucket, "count": count})
 
     cursor.execute(
         """
@@ -798,7 +927,7 @@ def fetch_dashboard_stats():
         ORDER BY alertCount DESC, nativeEventID ASC
         LIMIT 8
         """,
-        (now_ms, last_week_start_ms),
+        (effective_end_ms, effective_start_ms),
     )
     top_events = []
     for native_event_id, log_id, alert_count in cursor.fetchall():
@@ -824,7 +953,7 @@ def fetch_dashboard_stats():
         ORDER BY alertCount DESC, g.endpointID ASC
         LIMIT 5
         """,
-        (now_ms, last_week_start_ms),
+        (effective_end_ms, effective_start_ms),
     )
     top_endpoints = []
     for endpoint_id, hostname, alert_count in cursor.fetchall():
@@ -855,7 +984,7 @@ def fetch_dashboard_stats():
         ORDER BY g.confidence DESC, g.tsEnd DESC, g.alertGroupID DESC
         LIMIT 5
         """,
-        (now_ms, last_week_start_ms),
+        (effective_end_ms, effective_start_ms),
     )
     recent_high_confidence_alerts = []
     for row in cursor.fetchall():
@@ -877,11 +1006,16 @@ def fetch_dashboard_stats():
 
     return {
         "generatedAt": now_ms,
+        "windowStart": effective_start_ms,
+        "windowEnd": effective_end_ms,
+        "timePreset": time_preset,
         "summary": {
             "activeNow": active_now,
             "activeLast24h": active_last_24h,
-            "activeLastWeek": active_last_week,
-            "highConfidenceLastWeek": high_confidence_last_week,
+            "activeLastWeek": active_in_window,
+            "activeInWindow": active_in_window,
+            "highConfidenceLastWeek": high_confidence_in_window,
+            "highConfidenceInWindow": high_confidence_in_window,
         },
         "timeline": timeline,
         "topEvents": top_events,

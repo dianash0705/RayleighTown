@@ -19,19 +19,39 @@
           </span>
           <h2>RayleighTown Entities</h2>
         </div>
-        <p class="subtitle">Endpoint registry for IT mapping. Each row links an Endpoint ID to its machine name, IP, and alert volume in the last 7 days.</p>
+        <p class="subtitle">Endpoint registry for IT mapping. Each row links an Endpoint ID to its machine name, IP, and alert volume in the selected time range.</p>
       </div>
 
-      <nav class="page-nav" aria-label="Main navigation">
-        <a class="nav-link" href="/">Dashboard</a>
-        <a class="nav-link" href="/alerts">Alerts</a>
-        <a class="nav-link is-active" href="/entities" aria-current="page">Entities</a>
-      </nav>
+      <div class="header-tools">
+        <div class="time-range" id="timeRange">
+          <button type="button" class="time-range-toggle" id="timeRangeToggle" aria-haspopup="true" aria-expanded="false">
+            <svg class="time-range-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7V3zm1 4h-2v6l5 3 1-1.7-4-2.3V7z"/></svg>
+            <span class="time-range-current" id="timeRangeLabel">Last week</span>
+            <svg class="time-range-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>
+          </button>
+          <div class="time-range-popover" id="timeRangePopover" role="menu" hidden>
+            <button type="button" class="time-range-preset" data-preset="last_24h" role="menuitem">Last 24 hours</button>
+            <button type="button" class="time-range-preset" data-preset="last_week" role="menuitem">Last week</button>
+            <button type="button" class="time-range-preset" data-preset="all" role="menuitem">All time</button>
+            <button type="button" class="time-range-preset" data-preset="custom" role="menuitem">Custom range</button>
+            <div class="time-range-custom" id="timeRangeCustom" hidden>
+              <label>From<input id="timeFrom" type="datetime-local" /></label>
+              <label>To<input id="timeTo" type="datetime-local" /></label>
+              <button type="button" id="applyTimeRange" class="secondary-button">Apply</button>
+            </div>
+          </div>
+        </div>
+        <nav class="page-nav" aria-label="Main navigation">
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/alerts">Alerts</a>
+          <a class="nav-link is-active" href="/entities" aria-current="page">Entities</a>
+        </nav>
+      </div>
     </div>
 
     <div class="chip-row" id="summaryRow" hidden>
       <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h10v4h4v14H3V3h4zm2 2v2h6V5H9zm-4 4v10h14V9H5zm2 2h2v2H7v-2zm4 0h6v2h-6v-2zm-4 4h10v2H7v-2z"/></svg></span><span>Entities</span> <strong id="chipEntityCount">0</strong></div>
-      <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 3 6v6c0 5 3.4 9.7 9 10 5.6-.3 9-5 9-10V6l-9-4zm0 3.2 5 2.2V12c0 3.8-2.3 7.2-5 7.9-2.7-.7-5-4.1-5-7.9V7.4l5-2.2z"/></svg></span><span>Alerts last week</span> <strong id="chipAlertCount">0</strong></div>
+      <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 3 6v6c0 5 3.4 9.7 9 10 5.6-.3 9-5 9-10V6l-9-4zm0 3.2 5 2.2V12c0 3.8-2.3 7.2-5 7.9-2.7-.7-5-4.1-5-7.9V7.4l5-2.2z"/></svg></span><span id="chipAlertsLabel">Alerts in range</span> <strong id="chipAlertCount">0</strong></div>
       <div class="chip"><span class="chip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 3 6 3.3V15l-6 3.3L6 15V8.3L12 5z"/></svg></span><span>With alerts</span> <strong id="chipActiveCount">0</strong></div>
     </div>
 
@@ -51,7 +71,7 @@
               <th class="sortable" data-sort-key="endpointID"><button type="button">Endpoint ID <span class="sort-indicator"></span></button></th>
               <th class="sortable" data-sort-key="name"><button type="button">Name <span class="sort-indicator"></span></button></th>
               <th class="sortable" data-sort-key="ip"><button type="button">IP <span class="sort-indicator"></span></button></th>
-              <th class="sortable" data-sort-key="alertsLastWeek"><button type="button">Alerts (last week) <span class="sort-indicator">▼</span></button></th>
+              <th class="sortable" data-sort-key="alertsLastWeek"><button type="button">Alerts <span class="sort-indicator">▼</span></button></th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -60,6 +80,7 @@
     </div>
   </div>
 
+  <script src="time_range.js"></script>
   <script src="entities.js"></script>
 </body>
 </html>

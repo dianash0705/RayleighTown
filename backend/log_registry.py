@@ -99,6 +99,18 @@ def resolve_native_event_ids_for_name(event_name: str) -> set[int]:
     return matches
 
 
+def resolve_native_event_ids_matching_pattern(pattern: str) -> set[int]:
+    import fnmatch
+
+    glob_pattern = pattern.replace("%", "*")
+    matches: set[int] = set()
+    for config in LOG_TYPE_CONFIG.values():
+        for native_event_id, name in config.get("event_id_names", {}).items():
+            if fnmatch.fnmatch(name.lower(), glob_pattern.lower()):
+                matches.add(native_event_id)
+    return matches
+
+
 def resolve_log_source_name(log_id: int | None) -> str | None:
     if log_id is None:
         return None

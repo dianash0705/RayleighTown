@@ -3,6 +3,7 @@ const summaryRow = document.getElementById("summaryRow");
 const chipEntityCount = document.getElementById("chipEntityCount");
 const chipAlertCount = document.getElementById("chipAlertCount");
 const chipActiveCount = document.getElementById("chipActiveCount");
+const chipAlertsLabel = document.getElementById("chipAlertsLabel");
 const table = document.getElementById("entitiesTable");
 const tbody = table.querySelector("tbody");
 const sortableHeaders = Array.from(table.querySelectorAll("th.sortable"));
@@ -12,6 +13,14 @@ let sortState = {
   key: "alertsLastWeek",
   direction: "desc",
 };
+
+let timeRangeControls = null;
+if (window.TimeRangeControls) {
+  timeRangeControls = window.TimeRangeControls.init({
+    onChange: loadEntities,
+    applyButtonId: "applyTimeRange",
+  });
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -88,13 +97,19 @@ function updateSummary(entities) {
   summaryRow.hidden = entities.length === 0;
 }
 
+function buildAlertsUrl(endpointID) {
+  const params = new URLSearchParams();
+  params.set("endpointID", endpointID);
+  return "/alerts?" + params.toString();
+}
+
 function renderRows(entities) {
   tbody.innerHTML = "";
 
   for (const entity of entities) {
     const tr = document.createElement("tr");
-    const alertsUrl = "/alerts?endpointID=" + encodeURIComponent(entity.endpointID) + "&timePreset=last_week";
-    const alertCount = Number(entity.alertsLastWeek || 0);
+    const alertsUrl = buildAlertsUrl(entity.endpointID);
+    const alertCount = Number(entity.alertCount ?? entity.alertsLastWeek ?? 0);
 
     tr.innerHTML =
       "<td><a class='entity-link' href='" + escapeHtml(alertsUrl) + "'>" + displayValue(entity.endpointID) + "</a></td>" +
@@ -143,13 +158,18 @@ async function loadEntities() {
   tbody.innerHTML = "";
 
   try {
-    const response = await fetch("/api/entities");
+    const query = timeRangeControls ? "?" + timeRangeControls.buildQueryParams().toString() : "";
+    const response = await fetch("/api/entities" + query);
     const data = await response.json();
 
     if (!response.ok) {
       statusEl.textContent = data.error || "Failed to load entities";
       summaryRow.hidden = true;
       return;
+    }
+
+    if (chipAlertsLabel && timeRangeControls) {
+      chipAlertsLabel.textContent = "Alerts (" + timeRangeControls.getLabel().toLowerCase() + ")";
     }
 
     statusEl.textContent = "Found " + data.count + " entit" + (data.count === 1 ? "y" : "ies");

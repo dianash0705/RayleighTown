@@ -1,0 +1,55 @@
+# Copy to benchmark_expectations.yaml and fill in your log paths.
+#
+# Run:  python run_benchmark_analysis.py
+# Or:   pytest tests/test_benchmark_expectations.py -m slow
+
+benchmarks:
+  - name: nightly_backup_security
+    description: >
+      Windows Security export where event 4624 repeats on a ~5 minute cadence.
+      Use this to confirm the true period is found and short-period ghosts stay weak.
+    path: C:/path/to/your/security_events.json
+    log_id: 0
+    endpoint_id: bench-nightly-backup
+    enabled: false
+    expectations:
+      - label: true 5-minute backup cycle
+        native_event_id: 4624
+        period_ms: 300000
+        period_tolerance_pct: 8
+        min_confidence: 45
+        min_windows: 1
+        must_detect: true
+        notes: Ground truth from manual review of the log.
+
+      - label: 1-minute subharmonic ghost should stay weak
+        native_event_id: 4624
+        period_ms: 60000
+        period_tolerance_pct: 5
+        max_confidence: 50
+        must_detect: false
+        notes: >
+          Expected false positive class: events every 5m also align every 1m.
+          We want it absent or low confidence, not at the top of the list.
+
+  - name: noisy_sysmon_long
+    description: Long Sysmon export with mixed periodic and bursty noise.
+    path: C:/path/to/your/sysmon_export.json
+    log_id: 1
+    endpoint_id: bench-noisy-sysmon
+    enabled: false
+    expectations:
+      - label: example true periodic signal
+        native_event_id: 3
+        period_ms: 90000
+        period_tolerance_pct: 10
+        min_confidence: 40
+        must_detect: true
+        notes: Replace native_event_id and period_ms with your known ground truth.
+
+      - label: example noise-only band
+        native_event_id: 3
+        period_ms: 60000
+        max_confidence: 35
+        must_detect: false
+        notes: Optional — document a period you believe should NOT fire strongly.

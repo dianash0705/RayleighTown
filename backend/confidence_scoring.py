@@ -77,7 +77,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from config import CONFIDENCE_SCORING_CONFIG, HARMONIC_ANALYSIS_CONFIG
-from fourier import _harmonic_support_at_period, _phase_similarity, evaluate_period
+from fourier import _harmonic_support_at_period, _phase_similarity, compute_spacing_alias_penalty, evaluate_period
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -113,6 +113,7 @@ class WindowConfidenceBreakdown:
     phase_bonus: float
     shape_bonus_capped: bool = False
     harmonic_contributions: tuple[HarmonicContribution, ...] = ()
+    spacing_alias_penalty: float = 0.0
     window_score: float = 0.0
     window_confidence: int = 0
 
@@ -389,8 +390,10 @@ def compute_window_confidence(
         phase_bonus,
     )
 
+    spacing_alias_penalty = compute_spacing_alias_penalty(period_ms, timestamps)
+
     window_score = _clamp(
-        base_peak + snr_bonus + harmonic_bonus + phase_bonus,
+        base_peak + snr_bonus + harmonic_bonus + phase_bonus - spacing_alias_penalty,
         0.0,
         scoring.max_window_score,
     )
@@ -406,6 +409,7 @@ def compute_window_confidence(
         phase_bonus=phase_bonus,
         shape_bonus_capped=shape_bonus_capped,
         harmonic_contributions=contributions,
+        spacing_alias_penalty=spacing_alias_penalty,
         window_score=window_score,
         window_confidence=_round_confidence(window_score),
     )
@@ -468,6 +472,14 @@ def _mean_pairwise_phase_similarity(snapshots: list[WindowSnapshot]) -> float:
     return sum(similarities) / len(similarities)
 
 
+def _apply_single_window_penalty(score: float, base_peak: float) -> float:
+    scoring = CONFIDENCE_SCORING_CONFIG
+    penalized = max(0.0, score - scoring.single_window_confidence_penalty)
+    if base_peak < scoring.uncorroborated_single_window_base_threshold:
+        penalized = min(penalized, scoring.uncorroborated_single_window_cap)
+    return penalized
+
+
 def compute_group_confidence(snapshots: list[WindowSnapshot]) -> GroupConfidenceBreakdown:
     """Aggregate window scores into a merged alert confidence."""
     scoring = CONFIDENCE_SCORING_CONFIG
@@ -491,9 +503,7 @@ def compute_group_confidence(snapshots: list[WindowSnapshot]) -> GroupConfidence
 
     if len(snapshots) == 1:
         only = snapshots[0]
-        lone_score = float(only.window_confidence)
-        if only.breakdown.base_peak < scoring.uncorroborated_single_window_base_threshold:
-            lone_score = min(lone_score, scoring.uncorroborated_single_window_cap)
+        lone_score = _apply_single_window_penalty(float(only.window_confidence), only.breakdown.base_peak)
         return GroupConfidenceBreakdown(
             window_confidences=(only.window_confidence,),
             aggregate_base=lone_score,
@@ -571,14 +581,11 @@ def finalize_uncorroborated_window_confidence(breakdown: WindowConfidenceBreakdo
     """
     Cap lone window scores that lack merge corroboration.
 
-    Strong fundamentals (high base_peak) keep the full window score — we do not
-    second-guess peaks that already passed SNR / harmony filters.
+    Strong fundamentals (high base_peak) keep most of the window score after a
+    fixed single-window penalty.
     """
-    scoring = CONFIDENCE_SCORING_CONFIG
-    score = breakdown.window_confidence
-    if breakdown.base_peak < scoring.uncorroborated_single_window_base_threshold:
-        score = min(score, _round_confidence(scoring.uncorroborated_single_window_cap))
-    return score
+    penalized = _apply_single_window_penalty(float(breakdown.window_confidence), breakdown.base_peak)
+    return _round_confidence(penalized)
 
 
 def build_window_snapshot(

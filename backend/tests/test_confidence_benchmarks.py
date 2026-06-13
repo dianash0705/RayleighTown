@@ -28,9 +28,13 @@ def _period_matches_signal(alert_period: float, period_ms: int) -> bool:
 def _matching_period_confidence(alerts, period_ms: int, *, fallback_to_max: bool = True) -> int:
     if not alerts:
         return 0
-    for alert in alerts:
-        if _period_matches_signal(alert.period_ts, period_ms):
-            return alert.confidence
+    matches = [
+        alert.confidence
+        for alert in alerts
+        if _period_matches_signal(alert.period_ts, period_ms)
+    ]
+    if matches:
+        return max(matches)
     if fallback_to_max:
         return _max_confidence(alerts)
     return 0

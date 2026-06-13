@@ -158,6 +158,140 @@ def resolve_superharmonic_canonical_period(
     )
 
 
+def _median_positive_inter_event_gap_ms(timestamps: list[float]) -> float:
+    unique_sorted = sorted({float(timestamp) for timestamp in timestamps})
+    if len(unique_sorted) < 2:
+        return 0.0
+
+    gaps = [
+        unique_sorted[index + 1] - unique_sorted[index]
+        for index in range(len(unique_sorted) - 1)
+        if unique_sorted[index + 1] > unique_sorted[index]
+    ]
+    if not gaps:
+        return 0.0
+
+    gaps.sort()
+    middle = len(gaps) // 2
+    if len(gaps) % 2 == 0:
+        return (gaps[middle - 1] + gaps[middle]) / 2.0
+    return float(gaps[middle])
+
+
+def period_supported_by_event_spacing(period_ms: float, timestamps: list[float]) -> bool:
+    """Reject burst piles with too few distinct timestamps (not plausibly periodic)."""
+    config = HARMONIC_ANALYSIS_CONFIG
+    if not timestamps or not math.isfinite(period_ms) or period_ms <= 0:
+        return False
+
+    unique_count = len({float(timestamp) for timestamp in timestamps})
+    if unique_count < config.min_unique_timestamps_for_period:
+        return False
+
+    median_gap_ms = _median_positive_inter_event_gap_ms(timestamps)
+    return median_gap_ms > 0
+
+
+def compute_spacing_alias_penalty(period_ms: float, timestamps: list[float]) -> float:
+    """
+    Soft penalty when a detected period is much shorter than median event spacing.
+
+    Used instead of hard period canonicalization so genuine short periods are not
+    suppressed when longer harmonic aliases happen to look strong.
+    """
+    config = HARMONIC_ANALYSIS_CONFIG
+    if not timestamps or not math.isfinite(period_ms) or period_ms <= 0:
+        return 0.0
+
+    median_gap_ms = _median_positive_inter_event_gap_ms(timestamps)
+    if median_gap_ms <= 0:
+        return config.max_spacing_alias_penalty
+
+    ratio = period_ms / median_gap_ms
+    threshold = config.min_period_to_median_gap_ratio
+    if ratio >= threshold:
+        return 0.0
+
+    severity = 1.0 - (ratio / threshold)
+    return severity * config.max_spacing_alias_penalty
+
+
+def resolve_subharmonic_alias_period(
+    period_ms: float,
+    peak_magnitude: float,
+    timestamps: list[float],
+    *,
+    phase: float = math.nan,
+) -> CanonicalPeriodResult:
+    """
+    Prefer the longest strong harmonic multiple of a detected short period.
+
+    Events every 5 minutes also align every 1 minute in Fourier space; this
+    steps upward through k * period while magnitude stays high and spacing supports it.
+    """
+    config = HARMONIC_ANALYSIS_CONFIG
+    if not config.subharmonic_alias_resolution_enabled or not timestamps:
+        return CanonicalPeriodResult(
+            period_ms=period_ms,
+            peak_magnitude=peak_magnitude,
+            phase=phase,
+            canonicalized=False,
+            reason="disabled_or_empty",
+        )
+
+    if not math.isfinite(period_ms) or period_ms <= 0 or peak_magnitude <= 0:
+        return CanonicalPeriodResult(
+            period_ms=period_ms,
+            peak_magnitude=peak_magnitude,
+            phase=phase,
+            canonicalized=False,
+            reason="invalid_period",
+        )
+
+    window_span_ms = max(timestamps) - min(timestamps)
+    median_gap_ms = _median_positive_inter_event_gap_ms(timestamps)
+    min_magnitude = peak_magnitude * config.subharmonic_alias_min_magnitude_ratio
+
+    best_period_ms = period_ms
+    best_magnitude = peak_magnitude
+    best_phase = phase
+
+    for multiplier in range(2, config.subharmonic_alias_max_multiplier + 1):
+        candidate_period_ms = period_ms * multiplier
+        if candidate_period_ms > window_span_ms + period_ms:
+            break
+
+        candidate_magnitude, candidate_phase = evaluate_period(timestamps, candidate_period_ms)
+        if candidate_magnitude < min_magnitude:
+            continue
+
+        if median_gap_ms > 0 and candidate_period_ms < median_gap_ms * config.min_period_to_median_gap_ratio:
+            continue
+
+        if candidate_magnitude >= best_magnitude * 0.98 or candidate_period_ms >= median_gap_ms * 0.75:
+            best_period_ms = candidate_period_ms
+            best_magnitude = candidate_magnitude
+            best_phase = candidate_phase
+
+    if best_period_ms == period_ms:
+        return CanonicalPeriodResult(
+            period_ms=period_ms,
+            peak_magnitude=peak_magnitude,
+            phase=phase,
+            canonicalized=False,
+            reason="no_stronger_longer_alias",
+        )
+
+    return CanonicalPeriodResult(
+        period_ms=best_period_ms,
+        peak_magnitude=best_magnitude,
+        phase=best_phase,
+        canonicalized=True,
+        original_period_ms=period_ms,
+        reason="longest_strong_harmonic_multiple",
+    )
+
+
 def _phase_similarity(left_phase: float, right_phase: float) -> float:
     return math.cos(left_phase - right_phase)
 

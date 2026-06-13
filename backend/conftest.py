@@ -21,9 +21,11 @@ def override_harmonic_config(monkeypatch):
 
     def _apply(**overrides):
         import brain
+        import fourier
 
         updated = replace(HARMONIC_ANALYSIS_CONFIG, **overrides)
         monkeypatch.setattr(brain, "HARMONIC_ANALYSIS_CONFIG", updated)
+        monkeypatch.setattr(fourier, "HARMONIC_ANALYSIS_CONFIG", updated)
         return updated
 
     return _apply
