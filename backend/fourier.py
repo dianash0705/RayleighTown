@@ -8,7 +8,7 @@ import numpy as np
 
 from tqdm.auto import tqdm
 
-from config import CANDIDATE_PERIOD_GROUP_CONFIGS
+from config import CANDIDATE_PERIOD_GROUP_CONFIGS, HARMONIC_ANALYSIS_CONFIG
 
 RADIUS = 15_000
 PERCENTILE = 0.10
@@ -72,6 +72,90 @@ def evaluate_period(timestamps: list[float], period_ms: float) -> tuple[float, f
     """Return (magnitude, phase) for an arbitrary candidate period."""
     _avg_x, _avg_y, magnitude, phase = _calculate_fourier_components(timestamps, period_ms)
     return magnitude, phase
+
+
+@dataclass(frozen=True)
+class CanonicalPeriodResult:
+    """Outcome of optional 2x superharmonic canonicalization."""
+
+    period_ms: float
+    peak_magnitude: float
+    phase: float
+    canonicalized: bool
+    original_period_ms: float | None = None
+    reason: str = ""
+
+
+def resolve_superharmonic_canonical_period(
+    period_ms: float,
+    peak_magnitude: float,
+    timestamps: list[float],
+    *,
+    phase: float = math.nan,
+    tolerance_ratio: float | None = None,
+) -> CanonicalPeriodResult:
+    """
+    Prefer half-period over a 2x alias when the longer period looks cancelled out.
+
+    For a true period *T*, events every *T* land on alternating phases at period *2T*,
+    so magnitude(*2T*) should be much lower than magnitude(*T*). We only step down by
+    one factor of two — shorter candidates (/3, /4, …) are not considered because they
+    can be harmonics of multiple unrelated fundamentals.
+
+    When events genuinely occur every *2T* (not every *T*), both *T* and *2T* stay
+    strong, so canonicalization does not fire.
+    """
+    config = HARMONIC_ANALYSIS_CONFIG
+    if not config.superharmonic_canonicalization_enabled or not timestamps:
+        return CanonicalPeriodResult(
+            period_ms=period_ms,
+            peak_magnitude=peak_magnitude,
+            phase=phase,
+            canonicalized=False,
+            reason="disabled_or_empty",
+        )
+
+    tolerance = (
+        tolerance_ratio
+        if tolerance_ratio is not None
+        else config.harmonic_tolerance_ratio
+    )
+    half_period_ms = period_ms / 2.0
+    ratio = period_ms / half_period_ms
+    nearest_multiplier = round(ratio)
+    if nearest_multiplier != 2 or abs(ratio - 2) > tolerance:
+        return CanonicalPeriodResult(
+            period_ms=period_ms,
+            peak_magnitude=peak_magnitude,
+            phase=phase,
+            canonicalized=False,
+            reason="not_two_to_one_ratio",
+        )
+
+    half_magnitude, half_phase = evaluate_period(timestamps, half_period_ms)
+    strength_ratio = config.superharmonic_half_strength_ratio
+    weak_double_ratio = config.superharmonic_weak_double_ratio
+
+    half_is_stronger = half_magnitude > peak_magnitude * strength_ratio
+    double_is_weak = peak_magnitude < half_magnitude * weak_double_ratio
+    if half_is_stronger and double_is_weak:
+        return CanonicalPeriodResult(
+            period_ms=half_period_ms,
+            peak_magnitude=half_magnitude,
+            phase=half_phase,
+            canonicalized=True,
+            original_period_ms=period_ms,
+            reason="half_period_stronger_with_2x_cancellation",
+        )
+
+    return CanonicalPeriodResult(
+        period_ms=period_ms,
+        peak_magnitude=peak_magnitude,
+        phase=phase,
+        canonicalized=False,
+        original_period_ms=None,
+        reason="ambiguous_or_insufficient_contrast",
+    )
 
 
 def _phase_similarity(left_phase: float, right_phase: float) -> float:

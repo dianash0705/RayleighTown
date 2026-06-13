@@ -13,8 +13,6 @@ const topEndpointsList = document.getElementById("topEndpointsList");
 const recentAlertsWidget = document.getElementById("recentAlertsWidget");
 const recentAlertsList = document.getElementById("recentAlertsList");
 
-const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
-
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -125,37 +123,6 @@ function renderTopEvents(events) {
       );
     }
   );
-}
-
-function formatRelativeTimestamp(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) {
-    return "";
-  }
-
-  const date = new Date(number);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
-
-  const diffMs = date.getTime() - Date.now();
-  const absMs = Math.abs(diffMs);
-  const units = [
-    { unit: "day", ms: 24 * 60 * 60 * 1000 },
-    { unit: "hour", ms: 60 * 60 * 1000 },
-    { unit: "minute", ms: 60 * 1000 },
-    { unit: "second", ms: 1000 },
-  ];
-
-  for (const entry of units) {
-    if (absMs >= entry.ms || entry.unit === "second") {
-      const raw = diffMs / entry.ms;
-      const rounded = entry.unit === "second" ? Math.round(raw) : Math.round(raw * 10) / 10;
-      return relativeTimeFormatter.format(rounded, entry.unit);
-    }
-  }
-
-  return "";
 }
 
 function buildAlertTriageUrl(alert) {

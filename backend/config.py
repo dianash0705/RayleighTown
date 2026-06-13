@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
@@ -76,8 +76,70 @@ class HarmonicAnalysisConfig:
 	phase_similarity_threshold: float = 0.9
 	harmonic_tolerance_ratio: float = 0.05
 
+	# Prefer half-period (e.g. 60s) over 2x alias (120s) only when the longer period
+	# shows a cancellation signature — weak 2x magnitude vs strong half-period.
+	# Does not walk further down (/3, /4) because shorter periods are ambiguous harmonics.
+	superharmonic_canonicalization_enabled: bool = True
+	superharmonic_half_strength_ratio: float = 1.25
+	superharmonic_weak_double_ratio: float = 0.55
+
 
 HARMONIC_ANALYSIS_CONFIG = HarmonicAnalysisConfig()
+
+
+@dataclass(frozen=True)
+class ConfidenceScoringConfig:
+	"""
+	Tunable weights for multi-factor confidence (see ``confidence_scoring.py``).
+
+	Window layer caps sum to ``max_window_score``; group bonuses can raise the
+	final merged alert up to 100.
+	"""
+
+	# Window layer
+	base_peak_scale: float = 70.0
+	max_base_peak: float = 70.0
+	max_snr_bonus: float = 15.0
+	snr_decay: float = 2.0
+	max_harmonic_bonus: float = 12.0
+	max_phase_bonus: float = 12.0
+	max_window_score: float = 85.0
+	# Cap harmonic+phase unless base_peak is very strong (all-stars alignment).
+	shape_bonus_to_base_cap_ratio: float = 0.50
+	all_stars_min_base_peak: float = 48.0
+
+	# Divisors used only for confidence (filters still check divisor 2 only).
+	confidence_harmonic_divisors: tuple[int, ...] = (2, 3, 4, 5, 6)
+	harmonic_weights: dict[int, float] = field(
+		default_factory=lambda: {3: 0.30, 4: 0.25, 5: 0.25, 6: 0.20}
+	)
+	phase_weights: dict[int, float] = field(
+		default_factory=lambda: {2: 0.30, 3: 0.25, 4: 0.20, 5: 0.15, 6: 0.10}
+	)
+
+	# Group layer (merged overlapping windows)
+	max_count_bonus: float = 20.0
+	count_bonus_scale: float = 4.0
+	count_bonus_phase_gate: float = 0.40
+	max_streak_bonus: float = 15.0
+	streak_bonus_scale: float = 5.0
+	streak_min_windows: int = 3
+	streak_step_tolerance_ratio: float = 0.15
+	max_phase_consistency_bonus: float = 10.0
+	max_phase_penalty: float = 22.0
+	phase_penalty_threshold: float = 0.45
+	# Lone window detections without merge corroboration — modest cap when base is
+	# not clearly dominant (reduces pure-noise single-window false highs).
+	uncorroborated_single_window_cap: float = 74.0
+	uncorroborated_single_window_base_threshold: float = 70.0
+
+	# Logging
+	confidence_logging_enabled: bool = True
+
+
+CONFIDENCE_SCORING_CONFIG = ConfidenceScoringConfig()
+CONFIDENCE_LOG_DIR = BASE_DIR / "logs" / "confidence"
+BENCHMARK_LOGS_CONFIG_PATH = BASE_DIR / "benchmark_logs.json"
 
 # Backward-compatible aliases for existing imports.
 GHOST_PEAK_SUPPRESSION_ENABLED = HARMONIC_ANALYSIS_CONFIG.ghost_suppression_enabled

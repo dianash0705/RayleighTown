@@ -106,6 +106,10 @@ def register_routes(app):
     def script_js():
         return send_from_directory(STATIC_DIR, "script.js")
 
+    @app.get("/relative_time.js")
+    def relative_time_js():
+        return send_from_directory(STATIC_DIR, "relative_time.js")
+
     @app.get("/entities")
     def entities_page():
         return send_from_directory(STATIC_DIR, "entities.html")

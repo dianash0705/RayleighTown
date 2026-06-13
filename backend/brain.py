@@ -15,8 +15,18 @@ from fourier import (
     get_median_value,
     filter_by_harmony,
     get_candidate_period_groups_ms,
+    resolve_superharmonic_canonical_period,
 )
-from config import HARMONIC_ANALYSIS_CONFIG
+from config import CONFIDENCE_SCORING_CONFIG, HARMONIC_ANALYSIS_CONFIG
+from confidence_log import log_confidence_event
+from confidence_scoring import (
+    ConfidenceBreakdown,
+    WindowSnapshot,
+    build_window_snapshot,
+    compute_group_confidence,
+    compute_window_confidence,
+    finalize_uncorroborated_window_confidence,
+)
 
 UNKNOWN_TIMESTAMP_MS = -1
 UNKNOWN_CONFIDENCE = 0
@@ -47,6 +57,8 @@ class AlertCore:
     period_ts: float = math.nan
     confidence: int = UNKNOWN_CONFIDENCE
     phase: float = math.nan
+    window_snapshots: tuple[WindowSnapshot, ...] = ()
+    confidence_breakdown: ConfidenceBreakdown | None = None
 
 
 FetchEventsFn = Callable[[str], Iterable[EventRecord]]
@@ -197,24 +209,79 @@ def _periods_match(period_a: float, period_b: float, tolerance_ratio: float = 0.
     return abs(period_a - period_b) <= (scale * tolerance_ratio)
 
 
-def _merge_alert_cores(left: AlertCore, right: AlertCore) -> AlertCore:
-    if right.confidence > left.confidence:
-        merged_period = right.period_ts
-        merged_phase = right.phase
-    else:
-        merged_period = left.period_ts
-        merged_phase = left.phase
+def _dedupe_window_snapshots(snapshots: list[WindowSnapshot]) -> list[WindowSnapshot]:
+    seen_keys: set[tuple[int, int, float]] = set()
+    unique_snapshots: list[WindowSnapshot] = []
+    for snapshot in snapshots:
+        key = (snapshot.ts_begin, snapshot.ts_end, round(snapshot.period_ts, 3))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique_snapshots.append(snapshot)
+    return unique_snapshots
 
-    return AlertCore(
-        ts_begin=min(left.ts_begin, right.ts_begin),
-        ts_end=max(left.ts_end, right.ts_end),
-        period_ts=merged_period,
-        confidence=max(left.confidence, right.confidence),
-        phase=merged_phase,
+
+def _log_group_confidence(
+    alert_core: AlertCore,
+    *,
+    endpoint_id: str | None = None,
+    native_event_id: int | None = None,
+) -> None:
+    if not CONFIDENCE_SCORING_CONFIG.confidence_logging_enabled:
+        return
+    if alert_core.confidence_breakdown is None:
+        return
+
+    log_confidence_event(
+        "group_merge",
+        {
+            "endpoint_id": endpoint_id,
+            "native_event_id": native_event_id,
+            "period_ms": alert_core.period_ts,
+            "ts_begin": alert_core.ts_begin,
+            "ts_end": alert_core.ts_end,
+            "confidence": alert_core.confidence,
+            "breakdown": alert_core.confidence_breakdown.to_dict(),
+        },
     )
 
 
-def _merge_overlapping_alert_cores(alerts: list[AlertCore]) -> list[AlertCore]:
+def _merge_alert_cores(
+    left: AlertCore,
+    right: AlertCore,
+    *,
+    endpoint_id: str | None = None,
+    native_event_id: int | None = None,
+) -> AlertCore:
+    merged_snapshots = _dedupe_window_snapshots(
+        list(left.window_snapshots) + list(right.window_snapshots)
+    )
+    group_breakdown = compute_group_confidence(merged_snapshots)
+    representative = max(merged_snapshots, key=lambda snapshot: snapshot.window_confidence)
+
+    merged_alert = AlertCore(
+        ts_begin=min(left.ts_begin, right.ts_begin),
+        ts_end=max(left.ts_end, right.ts_end),
+        period_ts=representative.period_ts,
+        confidence=group_breakdown.final_confidence,
+        phase=representative.phase,
+        window_snapshots=tuple(merged_snapshots),
+        confidence_breakdown=ConfidenceBreakdown(level="group", group=group_breakdown),
+    )
+    _log_group_confidence(
+        merged_alert,
+        endpoint_id=endpoint_id,
+        native_event_id=native_event_id,
+    )
+    return merged_alert
+
+
+def _merge_overlapping_alert_cores(
+    alerts: list[AlertCore],
+    *,
+    endpoint_id: str | None = None,
+    native_event_id: int | None = None,
+) -> list[AlertCore]:
     if not alerts:
         return []
 
@@ -232,7 +299,12 @@ def _merge_overlapping_alert_cores(alerts: list[AlertCore]) -> list[AlertCore]:
                 index += 1
                 continue
 
-            candidate = _merge_alert_cores(existing_alert, candidate)
+            candidate = _merge_alert_cores(
+                existing_alert,
+                candidate,
+                endpoint_id=endpoint_id,
+                native_event_id=native_event_id,
+            )
             merged_alerts.pop(index)
 
         merged_alerts.append(candidate)
@@ -273,7 +345,11 @@ def _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
 
     alerts = suppress_harmonic_ghost_alerts(alerts)
 
-    merged_alerts = _merge_overlapping_alert_cores(alerts)
+    merged_alerts = _merge_overlapping_alert_cores(
+        alerts,
+        endpoint_id=context.endpoint_id,
+        native_event_id=context.native_event_id,
+    )
     return merged_alerts or None
 
 
@@ -285,25 +361,12 @@ def build_fourier_alert_from_sorted_timestamps_ms(
         return None
 
     harmonic_config = HARMONIC_ANALYSIS_CONFIG
-    include_phase = (
-        harmonic_config.phase_ghost_suppression_enabled
-        or harmonic_config.use_phase_in_harmonic_check
+    period_candidates_ms, magnitudes, phases = fourier_transform(
+        sorted_timestamps_ms,
+        period_candidates_ms=context.period_candidates_ms,
+        show_progress=context.show_progress,
+        include_phase=True,
     )
-    if include_phase:
-        period_candidates_ms, magnitudes, phases = fourier_transform(
-            sorted_timestamps_ms,
-            period_candidates_ms=context.period_candidates_ms,
-            show_progress=context.show_progress,
-            include_phase=True,
-        )
-    else:
-        period_candidates_ms, magnitudes = fourier_transform(
-            sorted_timestamps_ms,
-            period_candidates_ms=context.period_candidates_ms,
-            show_progress=context.show_progress,
-            include_phase=False,
-        )
-        phases = [math.nan for _ in period_candidates_ms]
     if not period_candidates_ms or not magnitudes:
         return None
 
@@ -413,17 +476,70 @@ def build_fourier_alert_from_sorted_timestamps_ms(
         except Exception:
             plot_path = None
 
+    timestamp_floats = [float(timestamp_ms) for timestamp_ms in sorted_timestamps_ms]
     alerts = []
     for point in harmonic_points:
-        confidence = max(0, min(100, int(round(point[1] * 100))))
+        period_ms = float(point[0])
+        peak_magnitude = float(point[1])
+        phase = float(phase_by_period.get(period_ms, math.nan))
+
+        canonical = resolve_superharmonic_canonical_period(
+            period_ms,
+            peak_magnitude,
+            timestamp_floats,
+            phase=phase,
+        )
+        if canonical.canonicalized:
+            period_ms = canonical.period_ms
+            peak_magnitude = canonical.peak_magnitude
+            phase = canonical.phase
+            phase_by_period[period_ms] = phase
+
+        window_breakdown = compute_window_confidence(
+            period_ms,
+            peak_magnitude,
+            median,
+            mad,
+            points,
+            timestamp_floats,
+            phase_by_period,
+        )
+        snapshot = build_window_snapshot(
+            ts_begin=sorted_timestamps_ms[0],
+            ts_end=sorted_timestamps_ms[-1],
+            period_ts=period_ms,
+            phase=phase,
+            breakdown=window_breakdown,
+        )
+        confidence_breakdown = ConfidenceBreakdown(level="window", window=window_breakdown)
+
+        if CONFIDENCE_SCORING_CONFIG.confidence_logging_enabled:
+            log_confidence_event(
+                "window_detection",
+                {
+                    "endpoint_id": context.endpoint_id,
+                    "native_event_id": context.native_event_id,
+                    "period_ms": period_ms,
+                    "canonicalized_from_period_ms": canonical.original_period_ms,
+                    "canonicalization_reason": canonical.reason,
+                    "ts_begin": sorted_timestamps_ms[0],
+                    "ts_end": sorted_timestamps_ms[-1],
+                    "confidence": finalize_uncorroborated_window_confidence(window_breakdown),
+                    "breakdown": confidence_breakdown.to_dict(),
+                },
+            )
+
         alerts.append(
             AlertCore(
                 ts_begin=sorted_timestamps_ms[0],
                 ts_end=sorted_timestamps_ms[-1],
-                period_ts=float(point[0]),
-                confidence=confidence,
-                phase=float(phase_by_period.get(point[0], math.nan)),
-            ))
+                period_ts=period_ms,
+                confidence=finalize_uncorroborated_window_confidence(window_breakdown),
+                phase=phase,
+                window_snapshots=(snapshot,),
+                confidence_breakdown=confidence_breakdown,
+            )
+        )
     return alerts
 
 register_alert_builder("fourier", build_fourier_alert_from_sorted_timestamps_ms)
@@ -486,6 +602,20 @@ def build_alerts_for_endpoint(
             continue
 
         for alert_core in alert_cores:
+            if CONFIDENCE_SCORING_CONFIG.confidence_logging_enabled and alert_core.confidence_breakdown:
+                log_confidence_event(
+                    "final_alert",
+                    {
+                        "endpoint_id": endpoint_id,
+                        "native_event_id": native_event_id,
+                        "period_ms": alert_core.period_ts,
+                        "ts_begin": alert_core.ts_begin,
+                        "ts_end": alert_core.ts_end,
+                        "confidence": alert_core.confidence,
+                        "breakdown": alert_core.confidence_breakdown.to_dict(),
+                    },
+                )
+
             alert_record = AlertRecord(
                 endpoint_id=endpoint_id,
                 native_event_id=native_event_id,

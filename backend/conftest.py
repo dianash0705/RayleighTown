@@ -4,7 +4,9 @@ from dataclasses import replace
 
 import pytest
 
-from config import HARMONIC_ANALYSIS_CONFIG
+import confidence_scoring
+
+from config import CONFIDENCE_SCORING_CONFIG, HARMONIC_ANALYSIS_CONFIG
 
 
 @pytest.fixture
@@ -22,6 +24,21 @@ def override_harmonic_config(monkeypatch):
 
         updated = replace(HARMONIC_ANALYSIS_CONFIG, **overrides)
         monkeypatch.setattr(brain, "HARMONIC_ANALYSIS_CONFIG", updated)
+        return updated
+
+    return _apply
+
+
+@pytest.fixture
+def override_confidence_config(monkeypatch):
+    """Temporarily replace confidence scoring config for a single test."""
+
+    def _apply(**overrides):
+        import brain
+
+        updated = replace(CONFIDENCE_SCORING_CONFIG, **overrides)
+        monkeypatch.setattr(confidence_scoring, "CONFIDENCE_SCORING_CONFIG", updated)
+        monkeypatch.setattr(brain, "CONFIDENCE_SCORING_CONFIG", updated)
         return updated
 
     return _apply

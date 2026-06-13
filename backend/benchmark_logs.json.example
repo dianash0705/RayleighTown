@@ -1,0 +1,21 @@
+{
+  "_comment": "Copy to benchmark_logs.json and set paths. Tests skip entries with enabled=false or missing files.",
+  "logs": [
+    {
+      "name": "clean_windows_security",
+      "description": "Windows Security log with a few relatively clean periodic signals.",
+      "path": "C:/path/to/your/security_events.json",
+      "log_id": 0,
+      "endpoint_id": "bench-clean-security",
+      "enabled": false
+    },
+    {
+      "name": "noisy_sysmon_long",
+      "description": "Long Sysmon JSON export — many connections, high jitter, large timeframe.",
+      "path": "C:/path/to/your/sysmon_export.json",
+      "log_id": 1,
+      "endpoint_id": "bench-noisy-sysmon",
+      "enabled": false
+    }
+  ]
+}
