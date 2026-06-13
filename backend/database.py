@@ -731,3 +731,160 @@ def fetch_entities():
         "windowEnd": window_end_ms,
         "entities": entities,
     }
+
+
+def _count_overlapping_alert_groups(cursor, window_start_ms: int, window_end_ms: int) -> int:
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM alertGroups
+        WHERE tsBegin <= ?
+          AND tsEnd >= ?
+        """,
+        (window_end_ms, window_start_ms),
+    )
+    row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def fetch_dashboard_stats():
+    now = datetime.now(timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
+    last_24h_start_ms = int((now - timedelta(hours=24)).timestamp() * 1000)
+    last_week_start_ms = int((now - timedelta(days=7)).timestamp() * 1000)
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    active_now = _count_overlapping_alert_groups(cursor, now_ms, now_ms)
+    active_last_24h = _count_overlapping_alert_groups(cursor, last_24h_start_ms, now_ms)
+    active_last_week = _count_overlapping_alert_groups(cursor, last_week_start_ms, now_ms)
+
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM alertGroups
+        WHERE tsBegin <= ?
+          AND tsEnd >= ?
+          AND confidence >= 80
+        """,
+        (now_ms, last_week_start_ms),
+    )
+    high_confidence_last_week = int(cursor.fetchone()[0])
+
+    timeline = []
+    for day_offset in range(6, -1, -1):
+        day_start = (now - timedelta(days=day_offset)).replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1) - timedelta(milliseconds=1)
+        bucket_start_ms = int(day_start.timestamp() * 1000)
+        bucket_end_ms = int(day_end.timestamp() * 1000)
+        count = _count_overlapping_alert_groups(cursor, bucket_start_ms, bucket_end_ms)
+        timeline.append(
+            {
+                "bucketStart": bucket_start_ms,
+                "bucketEnd": bucket_end_ms,
+                "label": day_start.strftime("%a %m/%d"),
+                "count": count,
+            }
+        )
+
+    cursor.execute(
+        """
+        SELECT nativeEventID, logID, COUNT(*) AS alertCount
+        FROM alertGroups
+        WHERE tsBegin <= ?
+          AND tsEnd >= ?
+        GROUP BY nativeEventID, logID
+        ORDER BY alertCount DESC, nativeEventID ASC
+        LIMIT 8
+        """,
+        (now_ms, last_week_start_ms),
+    )
+    top_events = []
+    for native_event_id, log_id, alert_count in cursor.fetchall():
+        top_events.append(
+            {
+                "nativeEventID": native_event_id,
+                "eventName": resolve_event_name(log_id, native_event_id),
+                "alertCount": int(alert_count),
+            }
+        )
+
+    cursor.execute(
+        """
+        SELECT
+            g.endpointID,
+            e.hostname,
+            COUNT(*) AS alertCount
+        FROM alertGroups g
+        LEFT JOIN endpoints e ON e.endpointID = g.endpointID
+        WHERE g.tsBegin <= ?
+          AND g.tsEnd >= ?
+        GROUP BY g.endpointID, e.hostname
+        ORDER BY alertCount DESC, g.endpointID ASC
+        LIMIT 5
+        """,
+        (now_ms, last_week_start_ms),
+    )
+    top_endpoints = []
+    for endpoint_id, hostname, alert_count in cursor.fetchall():
+        top_endpoints.append(
+            {
+                "endpointID": endpoint_id,
+                "name": hostname,
+                "alertCount": int(alert_count),
+            }
+        )
+
+    cursor.execute(
+        """
+        SELECT
+            g.alertGroupID,
+            g.endpointID,
+            g.nativeEventID,
+            g.logID,
+            g.confidence,
+            g.tsBegin,
+            g.tsEnd,
+            e.hostname
+        FROM alertGroups g
+        LEFT JOIN endpoints e ON e.endpointID = g.endpointID
+        WHERE g.confidence >= 80
+          AND g.tsBegin <= ?
+          AND g.tsEnd >= ?
+        ORDER BY g.confidence DESC, g.tsEnd DESC, g.alertGroupID DESC
+        LIMIT 5
+        """,
+        (now_ms, last_week_start_ms),
+    )
+    recent_high_confidence_alerts = []
+    for row in cursor.fetchall():
+        alert_group_id, endpoint_id, native_event_id, log_id, confidence, ts_begin, ts_end, hostname = row
+        recent_high_confidence_alerts.append(
+            {
+                "alertID": alert_group_id,
+                "endpointID": endpoint_id,
+                "name": hostname,
+                "nativeEventID": native_event_id,
+                "eventName": resolve_event_name(log_id, native_event_id),
+                "confidence": int(confidence),
+                "tsBegin": ts_begin,
+                "tsEnd": ts_end,
+            }
+        )
+
+    conn.close()
+
+    return {
+        "generatedAt": now_ms,
+        "summary": {
+            "activeNow": active_now,
+            "activeLast24h": active_last_24h,
+            "activeLastWeek": active_last_week,
+            "highConfidenceLastWeek": high_confidence_last_week,
+        },
+        "timeline": timeline,
+        "topEvents": top_events,
+        "topEndpoints": top_endpoints,
+        "recentHighConfidenceAlerts": recent_high_confidence_alerts,
+    }

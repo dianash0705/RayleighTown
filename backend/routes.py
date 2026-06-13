@@ -8,7 +8,7 @@ from werkzeug.utils import secure_filename
 
 from alert_filters import build_alert_filters
 from config import UPLOAD_DIR
-from database import fetch_alert_detail, fetch_alerts, fetch_entities, insert_events, upsert_endpoint
+from database import fetch_alert_detail, fetch_alerts, fetch_dashboard_stats, fetch_entities, insert_events, upsert_endpoint
 from log_registry import LOG_TYPE_CONFIG, LOG_SOURCE_MAP, all_event_names
 
 
@@ -87,8 +87,16 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 def register_routes(app):
     @app.get("/")
-    def index():
+    def dashboard_page():
+        return send_from_directory(STATIC_DIR, "dashboard.html")
+
+    @app.get("/alerts")
+    def alerts_page():
         return send_from_directory(STATIC_DIR, "index.html")
+
+    @app.get("/dashboard.js")
+    def dashboard_js():
+        return send_from_directory(STATIC_DIR, "dashboard.js")
 
     @app.get("/style.css")
     def style_css():
@@ -108,7 +116,11 @@ def register_routes(app):
 
     @app.get("/alerts.html")
     def legacy_alerts_page():
-        return redirect("/", code=301)
+        return redirect("/alerts", code=301)
+
+    @app.get("/api/dashboard")
+    def get_dashboard():
+        return jsonify(fetch_dashboard_stats()), 200
 
     @app.get("/api/meta")
     def get_meta():

@@ -93,7 +93,7 @@ function renderRows(entities) {
 
   for (const entity of entities) {
     const tr = document.createElement("tr");
-    const alertsUrl = "/?endpointID=" + encodeURIComponent(entity.endpointID) + "&timePreset=last_week";
+    const alertsUrl = "/alerts?endpointID=" + encodeURIComponent(entity.endpointID) + "&timePreset=last_week";
     const alertCount = Number(entity.alertsLastWeek || 0);
 
     tr.innerHTML =

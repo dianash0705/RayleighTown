@@ -588,15 +588,33 @@ function applyQueryParamsFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const endpointID = params.get("endpointID");
   const timePreset = params.get("timePreset");
+  const nativeEventID = params.get("nativeEventID");
+  const minConfidence = params.get("minConfidence");
+  let hasFilters = false;
 
   if (endpointID) {
     endpointInput.value = endpointID;
-    setFiltersExpanded(true);
+    hasFilters = true;
+  }
+
+  if (nativeEventID) {
+    nativeEventIDInput.value = nativeEventID;
+    hasFilters = true;
+  }
+
+  if (minConfidence) {
+    minConfidenceInput.value = minConfidence;
+    hasFilters = true;
   }
 
   if (timePreset && timePresetInput.querySelector('option[value="' + timePreset + '"]')) {
     timePresetInput.value = timePreset;
     updateCustomTimeVisibility();
+    hasFilters = true;
+  }
+
+  if (hasFilters) {
+    setFiltersExpanded(true);
   }
 }
 

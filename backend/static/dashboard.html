@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RayleighTown Dashboard</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div class="container dashboard-container">
+    <div class="header">
+      <div class="title-block">
+        <div class="title-line">
+          <span class="title-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+          </span>
+          <h2>RayleighTown Dashboard</h2>
+        </div>
+        <p class="subtitle">Operational overview of alert volume, active activity, and the most frequent event patterns from the past week.</p>
+      </div>
+
+      <nav class="page-nav" aria-label="Main navigation">
+        <a class="nav-link is-active" href="/" aria-current="page">Dashboard</a>
+        <a class="nav-link" href="/alerts">Alerts</a>
+        <a class="nav-link" href="/entities">Entities</a>
+      </nav>
+    </div>
+
+    <div id="status" class="dashboard-status"></div>
+
+    <section class="widget-grid stat-grid" id="summaryWidgets" hidden>
+      <article class="widget stat-widget">
+        <h3>Active now</h3>
+        <p class="stat-value" id="statActiveNow">0</p>
+        <p class="stat-caption">Alerts spanning the current timestamp</p>
+      </article>
+      <article class="widget stat-widget">
+        <h3>Last 24 hours</h3>
+        <p class="stat-value" id="statActive24h">0</p>
+        <p class="stat-caption">Alerts overlapping the past day</p>
+      </article>
+      <article class="widget stat-widget">
+        <h3>Last 7 days</h3>
+        <p class="stat-value" id="statActiveWeek">0</p>
+        <p class="stat-caption">Alerts overlapping the past week</p>
+      </article>
+      <article class="widget stat-widget">
+        <h3>High confidence</h3>
+        <p class="stat-value" id="statHighConfidence">0</p>
+        <p class="stat-caption">Week alerts at 80%+ confidence</p>
+      </article>
+    </section>
+
+    <section class="widget recent-alerts-widget" id="recentAlertsWidget" hidden>
+      <div class="widget-header widget-header-inline">
+        <div>
+          <h3>Recent high-confidence alerts</h3>
+          <p class="widget-subtitle">Top triage candidates from the past week (80%+ confidence)</p>
+        </div>
+        <a class="recent-alerts-view-all" href="/alerts?minConfidence=80&amp;timePreset=last_week">View all</a>
+      </div>
+      <ol id="recentAlertsList" class="recent-alerts-list"></ol>
+    </section>
+
+    <section class="dashboard-main-grid" id="mainWidgets" hidden>
+      <article class="widget chart-widget chart-widget-compact" id="chartWidget">
+        <div class="widget-header">
+          <h3>Active alert volume</h3>
+          <p class="widget-subtitle">Daily overlap count, past week</p>
+        </div>
+        <div class="chart-shell">
+          <svg id="volumeChart" class="volume-chart volume-chart-compact" viewBox="0 0 320 180" preserveAspectRatio="none" role="img" aria-label="Active alerts volume chart"></svg>
+        </div>
+      </article>
+
+      <div class="dashboard-side-stack" id="listsWidget">
+        <article class="widget list-widget">
+          <div class="widget-header">
+            <h3>Most common alerts</h3>
+            <p class="widget-subtitle">Top event types in the past week</p>
+          </div>
+          <ol id="topEventsList" class="ranked-list"></ol>
+        </article>
+
+        <article class="widget list-widget">
+          <div class="widget-header">
+            <h3>Busiest endpoints</h3>
+            <p class="widget-subtitle">Endpoint IDs with the most alerts this week</p>
+          </div>
+          <ol id="topEndpointsList" class="ranked-list"></ol>
+        </article>
+      </div>
+    </section>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
