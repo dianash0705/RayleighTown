@@ -6,7 +6,18 @@ import pytest
 
 import confidence_scoring
 
-from config import CONFIDENCE_SCORING_CONFIG, HARMONIC_ANALYSIS_CONFIG
+from config import CONFIDENCE_SCORING_CONFIG, HARMONIC_ANALYSIS_CONFIG, INGESTION_CONFIG
+
+
+@pytest.fixture(autouse=True)
+def disable_analysis_worker(monkeypatch):
+    monkeypatch.setenv("DISABLE_ANALYSIS_WORKER", "1")
+    import config
+    import database
+
+    updated = replace(INGESTION_CONFIG, analysis_worker_enabled=False)
+    monkeypatch.setattr(config, "INGESTION_CONFIG", updated)
+    monkeypatch.setattr(database, "INGESTION_CONFIG", updated)
 
 
 @pytest.fixture

@@ -181,3 +181,18 @@ EVENT_MATCHING_CONFIG = EventMatchingConfig()
 GHOST_PEAK_SUPPRESSION_ENABLED = HARMONIC_ANALYSIS_CONFIG.ghost_suppression_enabled
 PHASE_GHOST_SUPPRESSION_ENABLED = HARMONIC_ANALYSIS_CONFIG.phase_ghost_suppression_enabled
 PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD = HARMONIC_ANALYSIS_CONFIG.phase_similarity_threshold
+
+
+@dataclass(frozen=True)
+class IngestionConfig:
+	"""Settings for incremental log ingest and analysis scheduling."""
+
+	# Re-accept events this far before the stored watermark (handles clock skew / overlap).
+	overlap_buffer_ms: int = 5 * 60_000
+	# Background worker poll interval when the analysis queue has pending work.
+	analysis_poll_interval_sec: float = 3.0
+	# Set False in tests to avoid starting the background worker thread.
+	analysis_worker_enabled: bool = True
+
+
+INGESTION_CONFIG = IngestionConfig()

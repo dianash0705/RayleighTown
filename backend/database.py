@@ -9,9 +9,16 @@ from auth import (
     hash_secret,
     verify_secret,
 )
-from brain import EventRecord, run_brain_for_endpoint
-from config import DB_PATH, PHASE_GHOST_SUPPRESSION_ENABLED, PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD
+from brain import (
+    AlertRecord,
+    EventRecord,
+    build_alerts_for_endpoint_incremental,
+    run_brain_for_endpoint,
+)
+from config import DB_PATH, INGESTION_CONFIG, PHASE_GHOST_SUPPRESSION_ENABLED, PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD
+from event_matching import MatchedEvent
 from event_parsers.common import extract_endpoint_agent_metadata
+from ingestion_models import InsertEventsResult, IncrementalAnalysisResult, NativeEventImpact
 from log_registry import resolve_event_name, resolve_log_source_name
 
 
@@ -581,7 +588,44 @@ def upsert_endpoint(endpoint_id: str, hostname: str | None, ip: str | None, last
     conn.close()
 
 
-def insert_events(endpoint_id: str, log_id: int, events):
+def get_max_log_timestamp(endpoint_id: str, log_id: int) -> int | None:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT MAX(timestamp)
+        FROM logs
+        WHERE endpointID = ? AND logID = ?
+        """,
+        (endpoint_id, log_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def _log_event_exists(
+    cursor,
+    endpoint_id: str,
+    log_id: int,
+    native_event_id: int,
+    timestamp_ms: int,
+) -> bool:
+    cursor.execute(
+        """
+        SELECT 1
+        FROM logs
+        WHERE endpointID = ? AND logID = ? AND nativeEventID = ? AND timestamp = ?
+        LIMIT 1
+        """,
+        (endpoint_id, log_id, native_event_id, timestamp_ms),
+    )
+    return cursor.fetchone() is not None
+
+
+def insert_events(endpoint_id: str, log_id: int, events) -> InsertEventsResult:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -592,15 +636,31 @@ def insert_events(endpoint_id: str, log_id: int, events):
     max_id_row = cursor.fetchone()
     next_internal_event_id = 0 if max_id_row[0] is None else max_id_row[0] + 1
 
+    watermark = get_max_log_timestamp(endpoint_id, log_id)
+    overlap_buffer_ms = INGESTION_CONFIG.overlap_buffer_ms
+    cutoff_ms = watermark - overlap_buffer_ms if watermark is not None else None
+
     latest_timestamp = 0
     endpoint_hostname = None
     endpoint_ip = None
+    skipped_count = 0
+    impact_bounds: dict[int, dict[str, int]] = {}
+    inserted_count = 0
 
     for event in events:
         timestamp_ms = event["timestamp_ms"]
         native_event_id = event["native_event_id"]
         if not isinstance(timestamp_ms, int):
+            conn.close()
             raise TypeError("timestamp_ms must be int")
+
+        if cutoff_ms is not None and timestamp_ms < cutoff_ms:
+            skipped_count += 1
+            continue
+
+        if _log_event_exists(cursor, endpoint_id, log_id, native_event_id, timestamp_ms):
+            skipped_count += 1
+            continue
 
         raw_payload = event.get("raw_payload") or {}
         parsed_details = event.get("parsed_details") or {}
@@ -639,6 +699,15 @@ def insert_events(endpoint_id: str, log_id: int, events):
             ),
         )
         next_internal_event_id += 1
+        inserted_count += 1
+
+        bounds = impact_bounds.setdefault(
+            native_event_id,
+            {"min": timestamp_ms, "max": timestamp_ms, "count": 0},
+        )
+        bounds["min"] = min(bounds["min"], timestamp_ms)
+        bounds["max"] = max(bounds["max"], timestamp_ms)
+        bounds["count"] += 1
 
     if latest_timestamp:
         cursor.execute(
@@ -655,7 +724,21 @@ def insert_events(endpoint_id: str, log_id: int, events):
 
     conn.commit()
     conn.close()
-    return len(events)
+
+    impacts = [
+        NativeEventImpact(
+            native_event_id=native_id,
+            new_min_ms=bounds["min"],
+            new_max_ms=bounds["max"],
+            new_event_count=bounds["count"],
+        )
+        for native_id, bounds in impact_bounds.items()
+    ]
+    return InsertEventsResult(
+        inserted_count=inserted_count,
+        skipped_count=skipped_count,
+        impacts=impacts,
+    )
 
 
 def fetch_events_for_endpoint(endpoint_id: str) -> list[EventRecord]:
@@ -711,22 +794,173 @@ def _alert_log_id(cursor, endpoint_id: str, native_event_id: int, event_ids: lis
     return int(row[0]) if row and row[0] is not None else None
 
 
-def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
+def fetch_preserved_alert_records(
+    endpoint_id: str,
+    native_event_id: int,
+    impact_min_ms: int,
+    impact_max_ms: int,
+) -> list[AlertRecord]:
+    """Return existing window alerts that do not overlap the new-event impact range."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-
     cursor.execute(
-        "DELETE FROM alertGroupMap WHERE alertGroupID IN (SELECT alertGroupID FROM alertGroups WHERE endpointID = ?)",
-        (endpoint_id,),
+        """
+        SELECT alertID, tsBegin, tsEnd, periodTs, confidence, phase
+        FROM alerts
+        WHERE endpointID = ?
+          AND nativeEventID = ?
+          AND NOT (tsBegin <= ? AND tsEnd >= ?)
+        ORDER BY tsBegin ASC, tsEnd ASC, alertID ASC
+        """,
+        (endpoint_id, native_event_id, impact_max_ms, impact_min_ms),
     )
-    cursor.execute("DELETE FROM alertGroups WHERE endpointID = ?", (endpoint_id,))
-    cursor.execute(
-        "DELETE FROM eventAlertMap WHERE alertID IN (SELECT alertID FROM alerts WHERE endpointID = ?)",
-        (endpoint_id,),
-    )
-    cursor.execute("DELETE FROM alerts WHERE endpointID = ?", (endpoint_id,))
+    rows = cursor.fetchall()
 
-    raw_alert_rows = []
+    preserved: list[AlertRecord] = []
+    for alert_id, ts_begin, ts_end, period_ts, confidence, phase in rows:
+        cursor.execute(
+            """
+            SELECT eventID, confidence
+            FROM eventAlertMap
+            WHERE alertID = ?
+            ORDER BY eventID ASC
+            """,
+            (alert_id,),
+        )
+        matched_rows = cursor.fetchall()
+        matched_events = []
+        for event_id, match_confidence in matched_rows:
+            cursor.execute(
+                """
+                SELECT timestamp
+                FROM logs
+                WHERE endpointID = ? AND internalEventID = ?
+                """,
+                (endpoint_id, event_id),
+            )
+            ts_row = cursor.fetchone()
+            if ts_row is None:
+                continue
+            matched_events.append(
+                MatchedEvent(
+                    internal_event_id=int(event_id),
+                    timestamp_ms=int(ts_row[0]),
+                    confidence=int(match_confidence),
+                )
+            )
+
+        preserved.append(
+            AlertRecord(
+                endpoint_id=endpoint_id,
+                native_event_id=native_event_id,
+                matched_events=tuple(matched_events),
+                ts_begin=int(ts_begin),
+                ts_end=int(ts_end),
+                period_ts=float(period_ts),
+                confidence=int(confidence),
+                phase=float(phase) if phase is not None else float("nan"),
+            )
+        )
+
+    conn.close()
+    return preserved
+
+
+def _group_raw_alert_rows(raw_alert_rows: list[dict]) -> list[dict]:
+    grouped_alerts: list[dict] = []
+
+    def find_matching_group(raw_alert_row: dict):
+        for group in grouped_alerts:
+            if group["endpoint_id"] != raw_alert_row["endpoint_id"]:
+                continue
+            if group["native_event_id"] != raw_alert_row["native_event_id"]:
+                continue
+            if group["period_ts"] != raw_alert_row["period_ts"]:
+                continue
+
+            if PHASE_GHOST_SUPPRESSION_ENABLED:
+                if group["phase"] is None or raw_alert_row["phase"] is None:
+                    continue
+                if _phase_similarity(group["phase"], raw_alert_row["phase"]) < PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD:
+                    continue
+
+            return group
+
+        return None
+
+    for raw_alert_row in sorted(
+        raw_alert_rows,
+        key=lambda row: (row["native_event_id"], row["period_ts"], row["ts_begin"], row["ts_end"], row["alert_id"]),
+    ):
+        group = find_matching_group(raw_alert_row)
+        if group is None:
+            group = {
+                "endpoint_id": raw_alert_row["endpoint_id"],
+                "native_event_id": raw_alert_row["native_event_id"],
+                "log_id": raw_alert_row["log_id"],
+                "ts_begin": raw_alert_row["ts_begin"],
+                "ts_end": raw_alert_row["ts_end"],
+                "period_ts": raw_alert_row["period_ts"],
+                "confidence": raw_alert_row["confidence"],
+                "phase": raw_alert_row["phase"],
+                "alert_ids": [raw_alert_row["alert_id"]],
+            }
+            grouped_alerts.append(group)
+        else:
+            group["ts_begin"] = min(group["ts_begin"], raw_alert_row["ts_begin"])
+            group["ts_end"] = max(group["ts_end"], raw_alert_row["ts_end"])
+            group["confidence"] = max(group["confidence"], raw_alert_row["confidence"])
+            if group["log_id"] is None and raw_alert_row["log_id"] is not None:
+                group["log_id"] = raw_alert_row["log_id"]
+            if group["phase"] is None and raw_alert_row["phase"] is not None:
+                group["phase"] = raw_alert_row["phase"]
+            group["alert_ids"].append(raw_alert_row["alert_id"])
+
+    return grouped_alerts
+
+
+def _insert_alert_groups(cursor, grouped_alerts: list[dict]) -> None:
+    for group in grouped_alerts:
+        cursor.execute(
+            """
+            INSERT INTO alertGroups (
+                endpointID,
+                nativeEventID,
+                logID,
+                tsBegin,
+                tsEnd,
+                periodTs,
+                confidence,
+                phase
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                group["endpoint_id"],
+                group["native_event_id"],
+                group["log_id"],
+                group["ts_begin"],
+                group["ts_end"],
+                group["period_ts"],
+                group["confidence"],
+                group["phase"],
+            ),
+        )
+        alert_group_id = cursor.lastrowid
+
+        for alert_id in group["alert_ids"]:
+            cursor.execute(
+                """
+                INSERT INTO alertGroupMap (
+                    alertGroupID,
+                    alertID
+                ) VALUES (?, ?)
+                """,
+                (alert_group_id, alert_id),
+            )
+
+
+def _insert_alert_records(cursor, alerts) -> list[dict]:
+    raw_alert_rows: list[dict] = []
 
     for alert in alerts:
         log_id = _alert_log_id(cursor, alert.endpoint_id, alert.native_event_id, alert.event_ids)
@@ -781,92 +1015,173 @@ def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
                 (matched_event.internal_event_id, alert_id, matched_event.confidence),
             )
 
-    grouped_alerts: list[dict] = []
+    return raw_alert_rows
 
-    def find_matching_group(raw_alert_row: dict):
-        for group in grouped_alerts:
-            if group["endpoint_id"] != raw_alert_row["endpoint_id"]:
-                continue
-            if group["native_event_id"] != raw_alert_row["native_event_id"]:
-                continue
-            if group["period_ts"] != raw_alert_row["period_ts"]:
-                continue
 
-            if PHASE_GHOST_SUPPRESSION_ENABLED:
-                if group["phase"] is None or raw_alert_row["phase"] is None:
-                    continue
-                if _phase_similarity(group["phase"], raw_alert_row["phase"]) < PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD:
-                    continue
+def _delete_alert_groups_for_endpoint(cursor, endpoint_id: str) -> None:
+    cursor.execute(
+        "DELETE FROM alertGroupMap WHERE alertGroupID IN (SELECT alertGroupID FROM alertGroups WHERE endpointID = ?)",
+        (endpoint_id,),
+    )
+    cursor.execute("DELETE FROM alertGroups WHERE endpointID = ?", (endpoint_id,))
 
-            return group
 
-        return None
+def replace_alerts_for_native_event_types(
+    endpoint_id: str,
+    alerts,
+    affected_native_event_ids: set[int],
+) -> int:
+    if not affected_native_event_ids:
+        return 0
 
-    for raw_alert_row in sorted(
-        raw_alert_rows,
-        key=lambda row: (row["native_event_id"], row["period_ts"], row["ts_begin"], row["ts_end"], row["alert_id"]),
-    ):
-        group = find_matching_group(raw_alert_row)
-        if group is None:
-            group = {
-                "endpoint_id": raw_alert_row["endpoint_id"],
-                "native_event_id": raw_alert_row["native_event_id"],
-                "log_id": raw_alert_row["log_id"],
-                "ts_begin": raw_alert_row["ts_begin"],
-                "ts_end": raw_alert_row["ts_end"],
-                "period_ts": raw_alert_row["period_ts"],
-                "confidence": raw_alert_row["confidence"],
-                "phase": raw_alert_row["phase"],
-                "alert_ids": [raw_alert_row["alert_id"]],
-            }
-            grouped_alerts.append(group)
-        else:
-            group["ts_begin"] = min(group["ts_begin"], raw_alert_row["ts_begin"])
-            group["ts_end"] = max(group["ts_end"], raw_alert_row["ts_end"])
-            group["confidence"] = max(group["confidence"], raw_alert_row["confidence"])
-            if group["log_id"] is None and raw_alert_row["log_id"] is not None:
-                group["log_id"] = raw_alert_row["log_id"]
-            if group["phase"] is None and raw_alert_row["phase"] is not None:
-                group["phase"] = raw_alert_row["phase"]
-            group["alert_ids"].append(raw_alert_row["alert_id"])
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
 
-    for group in grouped_alerts:
-        cursor.execute(
-            """
-            INSERT INTO alertGroups (
-                endpointID,
-                nativeEventID,
-                logID,
-                tsBegin,
-                tsEnd,
-                periodTs,
-                confidence,
-                phase
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                group["endpoint_id"],
-                group["native_event_id"],
-                group["log_id"],
-                group["ts_begin"],
-                group["ts_end"],
-                group["period_ts"],
-                group["confidence"],
-                group["phase"],
-            ),
+    placeholders = ",".join("?" for _ in affected_native_event_ids)
+    params = (endpoint_id, *sorted(affected_native_event_ids))
+
+    cursor.execute(
+        f"""
+        DELETE FROM eventAlertMap
+        WHERE alertID IN (
+            SELECT alertID FROM alerts
+            WHERE endpointID = ? AND nativeEventID IN ({placeholders})
         )
-        alert_group_id = cursor.lastrowid
+        """,
+        params,
+    )
+    cursor.execute(
+        f"DELETE FROM alerts WHERE endpointID = ? AND nativeEventID IN ({placeholders})",
+        params,
+    )
 
-        for alert_id in group["alert_ids"]:
-            cursor.execute(
-                """
-                INSERT INTO alertGroupMap (
-                    alertGroupID,
-                    alertID
-                ) VALUES (?, ?)
-                """,
-                (alert_group_id, alert_id),
-            )
+    _delete_alert_groups_for_endpoint(cursor, endpoint_id)
+
+    _insert_alert_records(cursor, alerts)
+
+    cursor.execute(
+        """
+        SELECT alertID, endpointID, nativeEventID, logID, tsBegin, tsEnd, periodTs, confidence, phase
+        FROM alerts
+        WHERE endpointID = ?
+        ORDER BY nativeEventID ASC, tsBegin ASC, tsEnd ASC, alertID ASC
+        """,
+        (endpoint_id,),
+    )
+    all_rows = cursor.fetchall()
+    all_raw_rows = [
+        {
+            "alert_id": row[0],
+            "endpoint_id": row[1],
+            "native_event_id": row[2],
+            "log_id": row[3],
+            "ts_begin": row[4],
+            "ts_end": row[5],
+            "period_ts": row[6],
+            "confidence": row[7],
+            "phase": row[8],
+        }
+        for row in all_rows
+    ]
+
+    grouped_alerts = _group_raw_alert_rows(all_raw_rows)
+    _insert_alert_groups(cursor, grouped_alerts)
+
+    conn.commit()
+    conn.close()
+    return len(grouped_alerts)
+
+
+def incremental_recompute_alerts_for_endpoint(
+    endpoint_id: str,
+    impacts: list[NativeEventImpact],
+    method: str = "fourier",
+    plot: bool = False,
+    show_progress: bool = False,
+) -> IncrementalAnalysisResult:
+    import time
+
+    started = time.monotonic()
+    if not impacts:
+        return IncrementalAnalysisResult(
+            endpoint_id=endpoint_id,
+            method=method,
+            event_types_analyzed=[],
+            new_events_queued=0,
+            total_events_loaded=0,
+            affected_type_events_loaded=0,
+            preserved_windows_kept=0,
+            alert_windows_written=0,
+            alert_groups_total=0,
+            elapsed_sec=0.0,
+        )
+
+    affected_native_event_ids = {impact.native_event_id for impact in impacts}
+    preserved_by_native_event: dict[int, list[AlertRecord]] = {}
+    preserved_windows_kept = 0
+    for impact in impacts:
+        preserved = fetch_preserved_alert_records(
+            endpoint_id,
+            impact.native_event_id,
+            impact.new_min_ms,
+            impact.new_max_ms,
+        )
+        preserved_by_native_event[impact.native_event_id] = preserved
+        preserved_windows_kept += len(preserved)
+
+    events = fetch_events_for_endpoint(endpoint_id)
+    affected_type_events_loaded = sum(
+        1 for event in events if event.native_event_id in affected_native_event_ids
+    )
+    new_events_queued = sum(impact.new_event_count for impact in impacts)
+
+    new_alerts = build_alerts_for_endpoint_incremental(
+        endpoint_id,
+        events,
+        impacts,
+        preserved_by_native_event,
+        method=method,
+        plot=plot,
+        show_progress=show_progress,
+    )
+    alert_groups_total = replace_alerts_for_native_event_types(
+        endpoint_id,
+        new_alerts,
+        affected_native_event_ids,
+    )
+
+    return IncrementalAnalysisResult(
+        endpoint_id=endpoint_id,
+        method=method,
+        event_types_analyzed=sorted(affected_native_event_ids),
+        new_events_queued=new_events_queued,
+        total_events_loaded=len(events),
+        affected_type_events_loaded=affected_type_events_loaded,
+        preserved_windows_kept=preserved_windows_kept,
+        alert_windows_written=len(new_alerts),
+        alert_groups_total=alert_groups_total,
+        elapsed_sec=time.monotonic() - started,
+    )
+
+
+def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "DELETE FROM alertGroupMap WHERE alertGroupID IN (SELECT alertGroupID FROM alertGroups WHERE endpointID = ?)",
+        (endpoint_id,),
+    )
+    cursor.execute("DELETE FROM alertGroups WHERE endpointID = ?", (endpoint_id,))
+    cursor.execute(
+        "DELETE FROM eventAlertMap WHERE alertID IN (SELECT alertID FROM alerts WHERE endpointID = ?)",
+        (endpoint_id,),
+    )
+    cursor.execute("DELETE FROM alerts WHERE endpointID = ?", (endpoint_id,))
+
+    raw_alert_rows = _insert_alert_records(cursor, alerts)
+    grouped_alerts = _group_raw_alert_rows(raw_alert_rows)
+    _insert_alert_groups(cursor, grouped_alerts)
 
     conn.commit()
     conn.close()

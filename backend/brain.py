@@ -180,6 +180,7 @@ def _build_group_alerts_from_sorted_timestamps_ms(
     sorted_timestamps_ms: list[int],
     context: AlertBuildContext,
     window_size_ms: int,
+    impact_range: tuple[int, int] | None = None,
 ) -> List[AlertCore] | None:
     if len(sorted_timestamps_ms) < HARMONIC_ANALYSIS_CONFIG.min_events_for_alert:
         return None
@@ -188,6 +189,14 @@ def _build_group_alerts_from_sorted_timestamps_ms(
     window_ranges = _build_window_ranges(sorted_timestamps_ms[0], sorted_timestamps_ms[-1], window_size_ms)
 
     for window_start_ms, window_end_ms in window_ranges:
+        if impact_range is not None and not _ranges_overlap(
+            window_start_ms,
+            window_end_ms,
+            impact_range[0],
+            impact_range[1],
+        ):
+            continue
+
         left_index = bisect_left(sorted_timestamps_ms, window_start_ms)
         right_index = bisect_right(sorted_timestamps_ms, window_end_ms)
         window_timestamps_ms = sorted_timestamps_ms[left_index:right_index]
@@ -322,6 +331,7 @@ def _merge_overlapping_alert_cores(
 def _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
     sorted_timestamps_ms: list[int],
     context: AlertBuildContext,
+    impact_range: tuple[int, int] | None = None,
 ) -> List[AlertCore] | None:
     if len(sorted_timestamps_ms) < HARMONIC_ANALYSIS_CONFIG.min_events_for_alert:
         return None
@@ -343,6 +353,7 @@ def _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
                 show_progress=context.show_progress,
             ),
             window_size_ms=group.window_size_ms,
+            impact_range=impact_range,
         )
         if grouped_alert_cores:
             alerts.extend(grouped_alert_cores)
@@ -588,6 +599,204 @@ def build_alerts_from_sorted_timestamps_ms(
         return _build_windowed_fourier_alerts_from_sorted_timestamps_ms(sorted_timestamps_ms, context)
 
     return builder(sorted_timestamps_ms, context)
+
+
+def _preserved_alert_record_to_alert_core(record: AlertRecord) -> AlertCore:
+    from confidence_scoring import WindowConfidenceBreakdown
+
+    breakdown = WindowConfidenceBreakdown(
+        peak_magnitude=0.0,
+        median=0.0,
+        mad=0.0,
+        snr=0.0,
+        base_peak=float(record.confidence),
+        snr_bonus=0.0,
+        harmonic_bonus=0.0,
+        phase_bonus=0.0,
+        window_confidence=record.confidence,
+    )
+    snapshot = build_window_snapshot(
+        ts_begin=record.ts_begin,
+        ts_end=record.ts_end,
+        period_ts=record.period_ts,
+        phase=record.phase,
+        breakdown=breakdown,
+    )
+    return AlertCore(
+        ts_begin=record.ts_begin,
+        ts_end=record.ts_end,
+        period_ts=record.period_ts,
+        confidence=record.confidence,
+        phase=record.phase,
+        window_snapshots=(snapshot,),
+    )
+
+
+def _alert_cores_to_alert_records(
+    endpoint_id: str,
+    native_event_id: int,
+    native_events: list[EventRecord],
+    alert_cores: list[AlertCore],
+    seen_alert_keys: set[tuple],
+) -> list[AlertRecord]:
+    alerts: list[AlertRecord] = []
+    candidate_events = [
+        (event.internal_event_id, event.timestamp_ms)
+        for event in native_events
+    ]
+
+    for alert_core in alert_cores:
+        if CONFIDENCE_SCORING_CONFIG.confidence_logging_enabled and alert_core.confidence_breakdown:
+            log_confidence_event(
+                "final_alert",
+                {
+                    "endpoint_id": endpoint_id,
+                    "native_event_id": native_event_id,
+                    "period_ms": alert_core.period_ts,
+                    "ts_begin": alert_core.ts_begin,
+                    "ts_end": alert_core.ts_end,
+                    "confidence": alert_core.confidence,
+                    "breakdown": alert_core.confidence_breakdown.to_dict(),
+                },
+            )
+
+        matched_events = match_events_to_alert(
+            candidate_events,
+            ts_begin_ms=alert_core.ts_begin,
+            ts_end_ms=alert_core.ts_end,
+            period_ms=alert_core.period_ts,
+            phase_rad=alert_core.phase,
+        )
+
+        alert_record = AlertRecord(
+            endpoint_id=endpoint_id,
+            native_event_id=native_event_id,
+            matched_events=matched_events,
+            ts_begin=alert_core.ts_begin,
+            ts_end=alert_core.ts_end,
+            period_ts=alert_core.period_ts,
+            confidence=alert_core.confidence,
+            phase=alert_core.phase,
+        )
+        alert_key = (
+            alert_record.endpoint_id,
+            alert_record.native_event_id,
+            alert_record.ts_begin,
+            alert_record.ts_end,
+            alert_record.period_ts,
+            alert_record.confidence,
+        )
+        if alert_key in seen_alert_keys:
+            continue
+        seen_alert_keys.add(alert_key)
+        alerts.append(alert_record)
+
+    return alerts
+
+
+def build_alerts_for_native_event_incremental(
+    endpoint_id: str,
+    native_event_id: int,
+    native_events: list[EventRecord],
+    *,
+    impact_range: tuple[int, int] | None,
+    preserved_alert_records: list[AlertRecord],
+    method: str = "fourier",
+    plot: bool = False,
+    show_progress: bool = False,
+) -> list[AlertRecord]:
+    native_events = sorted(native_events, key=lambda item: item.timestamp_ms)
+    sorted_timestamps_ms = [event.timestamp_ms for event in native_events]
+    if len(sorted_timestamps_ms) < HARMONIC_ANALYSIS_CONFIG.min_events_for_alert:
+        return []
+
+    context = AlertBuildContext(
+        endpoint_id=endpoint_id,
+        native_event_id=native_event_id,
+        plot=plot,
+        show_progress=show_progress,
+    )
+
+    recomputed_cores: list[AlertCore] = []
+    if method == "fourier":
+        recomputed = _build_windowed_fourier_alerts_from_sorted_timestamps_ms(
+            sorted_timestamps_ms,
+            context,
+            impact_range=impact_range,
+        )
+        if recomputed:
+            recomputed_cores.extend(recomputed)
+    else:
+        builder = get_alert_builder(method)
+        built = builder(sorted_timestamps_ms, context)
+        if built is not None:
+            recomputed_cores.append(built)
+
+    preserved_cores = [
+        _preserved_alert_record_to_alert_core(record)
+        for record in preserved_alert_records
+    ]
+    combined_cores = suppress_harmonic_ghost_alerts(preserved_cores + recomputed_cores)
+    merged_cores = _merge_overlapping_alert_cores(
+        combined_cores,
+        endpoint_id=endpoint_id,
+        native_event_id=native_event_id,
+    )
+
+    seen_alert_keys: set[tuple] = set()
+    return _alert_cores_to_alert_records(
+        endpoint_id,
+        native_event_id,
+        native_events,
+        merged_cores,
+        seen_alert_keys,
+    )
+
+
+def build_alerts_for_endpoint_incremental(
+    endpoint_id: str,
+    events: Iterable[EventRecord],
+    impacts: list,
+    preserved_by_native_event: dict[int, list[AlertRecord]],
+    method: str = "fourier",
+    plot: bool = False,
+    show_progress: bool = False,
+) -> list[AlertRecord]:
+    grouped_by_native_event = _group_logs_by_native_event(events)
+    alerts: list[AlertRecord] = []
+
+    impact_by_native_event = {impact.native_event_id: impact for impact in impacts}
+
+    native_event_items = [
+        (native_event_id, impact_by_native_event[native_event_id])
+        for native_event_id in impact_by_native_event
+        if native_event_id in grouped_by_native_event
+    ]
+    if show_progress:
+        native_event_items = tqdm(
+            native_event_items,
+            desc=f"Processing endpoint {endpoint_id}",
+            unit="event group",
+        )
+
+    for native_event_id, impact in native_event_items:
+        native_events = grouped_by_native_event[native_event_id]
+        impact_range = (impact.new_min_ms, impact.new_max_ms)
+        preserved_records = preserved_by_native_event.get(native_event_id, [])
+        alerts.extend(
+            build_alerts_for_native_event_incremental(
+                endpoint_id,
+                native_event_id,
+                native_events,
+                impact_range=impact_range,
+                preserved_alert_records=preserved_records,
+                method=method,
+                plot=plot,
+                show_progress=show_progress,
+            )
+        )
+
+    return alerts
 
 
 def build_alerts_for_endpoint(

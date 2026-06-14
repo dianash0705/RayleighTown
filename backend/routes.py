@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -111,6 +112,7 @@ def _log_id_from_source_name(source_name):
 
 
 STATIC_DIR = Path(__file__).parent / "static"
+logger = logging.getLogger(__name__)
 
 
 def _account_public(account: dict) -> dict:
@@ -505,14 +507,37 @@ def register_routes(app):
         except RuntimeError as err:
             return jsonify({"error": str(err)}), 400
 
-        inserted_count = insert_events(endpoint_id, log_id, whitelisted_events)
+        inserted_result = insert_events(endpoint_id, log_id, whitelisted_events)
         upsert_endpoint(endpoint_id, hostname, ip, int(datetime.utcnow().timestamp() * 1000))
+
+        queue_action = None
+        if inserted_result.has_new_events:
+            from analysis_queue import get_analysis_queue
+
+            queue_action = get_analysis_queue().enqueue(endpoint_id, inserted_result.impacts)
+
+        logger.info(
+            "Log upload endpoint=%s logID=%s logType=%s inserted=%s skipped=%s "
+            "extracted=%s eventTypes=%s analysisQueued=%s queueAction=%s filename=%s",
+            endpoint_id,
+            log_id,
+            log_config["name"],
+            inserted_result.inserted_count,
+            inserted_result.skipped_count,
+            len(whitelisted_events),
+            sorted({impact.native_event_id for impact in inserted_result.impacts}),
+            inserted_result.has_new_events,
+            queue_action,
+            saved_name,
+        )
 
         return jsonify(
             {
                 "message": "Log processed successfully.",
                 "endpointID": endpoint_id,
-                "inserted": inserted_count,
+                "inserted": inserted_result.inserted_count,
+                "skipped": inserted_result.skipped_count,
+                "analysisQueued": inserted_result.has_new_events,
                 "logID": log_id,
                 "logType": log_config["name"],
                 "sourceName": source_name if source_name else None,
