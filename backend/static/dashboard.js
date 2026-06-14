@@ -184,6 +184,12 @@ function buildAlertsListUrl(extraParams) {
   return "/alerts?" + params.toString();
 }
 
+function buildEndpointAlertsUrl(endpointID) {
+  const params = new URLSearchParams();
+  params.set("endpointID", endpointID);
+  return "/alerts?" + params.toString();
+}
+
 function renderRecentHighConfidenceAlerts(alerts) {
   recentAlertsList.innerHTML = "";
   const items = Array.isArray(alerts) ? alerts : [];
@@ -200,21 +206,23 @@ function renderRecentHighConfidenceAlerts(alerts) {
   for (const alert of items) {
     const li = document.createElement("li");
     const triageUrl = buildAlertTriageUrl(alert);
-    const endpointLabel = alert.name
-      ? "Endpoint ID " + alert.endpointID + " · " + alert.name
-      : "Endpoint ID " + alert.endpointID;
+    const endpointUrl = buildEndpointAlertsUrl(alert.endpointID);
+    const endpointName = alert.name || ("Endpoint " + alert.endpointID);
+    const endpointMeta = alert.name
+      ? "<a class='endpoint-link' href='" + escapeHtml(endpointUrl) + "'>" + escapeHtml(alert.name) + "</a> · ID " + escapeHtml(alert.endpointID)
+      : "<a class='endpoint-link' href='" + escapeHtml(endpointUrl) + "'>" + escapeHtml(endpointName) + "</a>";
     const endedRelative = formatRelativeTimestamp(alert.tsEnd);
     const endedCaption = endedRelative ? "Ended " + endedRelative : "Recently active";
 
     li.innerHTML =
-      "<a class='recent-alert-card' href='" + escapeHtml(triageUrl) + "'>" +
-        "<div class='recent-alert-main'>" +
+      "<div class='recent-alert-card'>" +
+        "<a class='recent-alert-main-link' href='" + escapeHtml(triageUrl) + "'>" +
           "<span class='recent-alert-event'>" + escapeHtml(alert.eventName) + "</span>" +
-          "<span class='recent-alert-meta'>" + escapeHtml(endpointLabel) + " · Event ID " + escapeHtml(alert.nativeEventID) + "</span>" +
+          "<span class='recent-alert-meta'>" + endpointMeta + " · Event ID " + escapeHtml(alert.nativeEventID) + "</span>" +
           "<span class='recent-alert-time'>" + escapeHtml(endedCaption) + "</span>" +
-        "</div>" +
-        "<span class='recent-alert-confidence'>" + escapeHtml(alert.confidence) + "%</span>" +
-      "</a>";
+        "</a>" +
+        "<a class='recent-alert-confidence' href='" + escapeHtml(triageUrl) + "'>" + escapeHtml(alert.confidence) + "%</a>" +
+      "</div>";
 
     recentAlertsList.appendChild(li);
   }
@@ -229,13 +237,14 @@ function renderTopEndpoints(endpoints) {
     "No endpoint activity recorded in the past week.",
     function (endpoint) {
       const alertsUrl = buildAlertsListUrl({ endpointID: endpoint.endpointID });
-      const nameMeta = endpoint.name
-        ? "<span class='ranked-meta'>" + escapeHtml(endpoint.name) + "</span>"
-        : "<span class='ranked-meta'>No hostname mapped</span>";
+      const primary = endpoint.name || endpoint.endpointID;
+      const idMeta = endpoint.name
+        ? "<span class='ranked-meta'>ID " + escapeHtml(endpoint.endpointID) + "</span>"
+        : "<span class='ranked-meta'>No name set</span>";
       return (
         "<div class='ranked-main'>" +
-          "<a class='ranked-link' href='" + escapeHtml(alertsUrl) + "'>Endpoint ID " + escapeHtml(endpoint.endpointID) + "</a>" +
-          nameMeta +
+          "<a class='ranked-link' href='" + escapeHtml(alertsUrl) + "'>" + escapeHtml(primary) + "</a>" +
+          idMeta +
         "</div>" +
         "<span class='ranked-count'>" + escapeHtml(endpoint.alertCount) + "</span>"
       );
@@ -244,7 +253,11 @@ function renderTopEndpoints(endpoints) {
 }
 
 async function loadDashboard() {
-  statusEl.textContent = "Loading dashboard...";
+  if (window.PageStatus) {
+    PageStatus.showLoading(statusEl, "Loading dashboard...");
+  } else {
+    statusEl.textContent = "Loading dashboard...";
+  }
   summaryWidgets.hidden = true;
   recentAlertsWidget.hidden = true;
   mainWidgets.hidden = true;
@@ -255,11 +268,19 @@ async function loadDashboard() {
     const data = await response.json();
 
     if (!response.ok) {
-      statusEl.textContent = data.error || "Failed to load dashboard";
+      if (window.PageStatus) {
+        PageStatus.showError(statusEl, data.error || "Failed to load dashboard");
+      } else {
+        statusEl.textContent = data.error || "Failed to load dashboard";
+      }
       return;
     }
 
-    statusEl.textContent = "";
+    if (window.PageStatus) {
+      PageStatus.clear(statusEl);
+    } else {
+      statusEl.textContent = "";
+    }
     updateRangeLabels(timeRangeControls ? timeRangeControls.getLabel() : "Last week");
     if (recentAlertsViewAll) {
       recentAlertsViewAll.href = buildAlertsListUrl({ minConfidence: "80" });
@@ -271,7 +292,11 @@ async function loadDashboard() {
     renderTopEndpoints(data.topEndpoints || []);
     mainWidgets.hidden = false;
   } catch (error) {
-    statusEl.textContent = "Network error while loading dashboard";
+    if (window.PageStatus) {
+      PageStatus.showError(statusEl, "Network error while loading dashboard.");
+    } else {
+      statusEl.textContent = "Network error while loading dashboard";
+    }
   }
 }
 

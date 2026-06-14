@@ -1,7 +1,9 @@
 import argparse
+from datetime import timedelta
 
 from flask import Flask
 
+from auth import load_or_create_secret_key
 from bootstrap import validate_runtime_environment
 from routes import register_routes
 
@@ -9,6 +11,10 @@ from routes import register_routes
 def create_app():
     validate_runtime_environment()
     app = Flask(__name__)
+    app.secret_key = load_or_create_secret_key()
+    app.permanent_session_lifetime = timedelta(days=7)
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     register_routes(app)
     return app
 

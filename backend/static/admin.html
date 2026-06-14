@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RayleighTown Admin</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-page="admin" data-require-admin="true">
+
+  <div class="container">
+    <div class="header">
+      <div class="title-block">
+        <div class="title-line">
+          <span class="title-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V5l-8-3zm0 4a3 3 0 1 1 0 6 3 3 0 0 1 0-6zm0 14c-2.2-.6-4.2-2.6-5.2-5 .3-1.6 3.4-2.5 5.2-2.5s4.9.9 5.2 2.5c-1 2.4-3 4.4-5.2 5z"/></svg>
+          </span>
+          <h2>RayleighTown Admin</h2>
+        </div>
+        <p class="subtitle" id="orgSubtitle">Manage your organization's users and registered endpoints.</p>
+      </div>
+
+      <div class="header-tools">
+        <nav class="page-nav" aria-label="Main navigation">
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/alerts">Alerts</a>
+          <a class="nav-link" href="/entities">Entities</a>
+        </nav>
+      </div>
+    </div>
+
+    <div id="adminStatus" class="admin-status" role="alert"></div>
+
+    <section class="widget admin-section">
+      <div class="widget-header">
+        <h3 class="widget-title">Users</h3>
+        <p class="widget-subtitle">People who can sign in to this organization.</p>
+      </div>
+
+      <form id="addUserForm" class="admin-inline-form">
+        <label>Username<input id="newUserName" placeholder="username" required /></label>
+        <label>Password<input id="newUserPassword" type="password" placeholder="password" required /></label>
+        <label class="admin-checkbox" id="newUserAdminWrap" hidden>
+          <input id="newUserAdmin" type="checkbox" /> Make admin
+        </label>
+        <button type="submit">Add user</button>
+      </form>
+
+      <div class="table-shell">
+        <div class="table-scroll">
+          <table id="usersTable">
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Role</th>
+                <th class="admin-actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="widget admin-section">
+      <div class="widget-header">
+        <h3 class="widget-title">Endpoints</h3>
+        <p class="widget-subtitle">Register a machine to get an ID + secret for its agent.</p>
+      </div>
+
+      <form id="addEndpointForm" class="admin-inline-form">
+        <label>Name (optional)<input id="newEndpointName" placeholder="e.g. Finance laptop" /></label>
+        <button type="submit">Register endpoint</button>
+      </form>
+
+      <div class="table-shell">
+        <div class="table-scroll">
+          <table id="endpointsTable">
+            <colgroup>
+              <col class="col-admin-ep-id" />
+              <col class="col-admin-ep-name" />
+              <col class="col-admin-ep-host" />
+              <col class="col-admin-ep-ip" />
+              <col class="col-admin-ep-seen" />
+              <col class="col-admin-ep-actions" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Endpoint ID</th>
+                <th>Name</th>
+                <th>Hostname</th>
+                <th>IP</th>
+                <th>Last seen</th>
+                <th class="admin-actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="relative_time.js"></script>
+  <script src="auth.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>

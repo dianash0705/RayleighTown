@@ -36,6 +36,7 @@ class AlertQueryFilters:
     window_end_ms: int | None = None
     sort_key: str = "confidence"
     sort_direction: str = "desc"
+    organization_id: int | None = None
 
 
 ALLOWED_SORT_KEYS = {
@@ -254,7 +255,7 @@ def resolve_time_window(args, *, default_preset: str = "last_week") -> tuple[int
     return window_start_ms, window_end_ms, time_preset
 
 
-def build_alert_filters(args) -> AlertQueryFilters:
+def build_alert_filters(args, *, organization_id: int | None = None) -> AlertQueryFilters:
     window_start_ms, window_end_ms, _time_preset = resolve_time_window(args, default_preset="all")
 
     sort_key = (args.get("sort") or "confidence").strip()
@@ -276,6 +277,7 @@ def build_alert_filters(args) -> AlertQueryFilters:
         window_end_ms=window_end_ms,
         sort_key=sort_key,
         sort_direction=sort_direction,
+        organization_id=organization_id,
     )
 
 
@@ -461,5 +463,9 @@ def apply_filter_rules(filters: AlertQueryFilters) -> tuple[list[str], list]:
         clauses.append("g.tsBegin <= ?")
         clauses.append("g.tsEnd >= ?")
         params.extend([filters.window_end_ms, filters.window_start_ms])
+
+    if filters.organization_id is not None:
+        clauses.append("g.endpointID IN (SELECT endpointID FROM endpoints WHERE organizationID = ?)")
+        params.append(filters.organization_id)
 
     return clauses, params

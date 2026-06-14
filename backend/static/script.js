@@ -1,10 +1,5 @@
 const form = document.getElementById("queryForm");
 const toggleFiltersButton = document.getElementById("toggleFilters");
-const timePresetInput = document.getElementById("timePreset");
-const timeFromWrap = document.getElementById("timeFromWrap");
-const timeToWrap = document.getElementById("timeToWrap");
-const timeFromInput = document.getElementById("timeFrom");
-const timeToInput = document.getElementById("timeTo");
 const endpointInput = document.getElementById("endpointID");
 const eventNameInput = document.getElementById("eventName");
 const nativeEventIDInput = document.getElementById("nativeEventID");
@@ -12,6 +7,7 @@ const minConfidenceInput = document.getElementById("minConfidence");
 const filterRulesList = document.getElementById("filterRulesList");
 const addFilterRuleButton = document.getElementById("addFilterRule");
 const resetFiltersButton = document.getElementById("resetFilters");
+const activeFilterChips = document.getElementById("activeFilterChips");
 const statusEl = document.getElementById("status");
 const summaryRow = document.getElementById("summaryRow");
 const chipAlertCount = document.getElementById("chipAlertCount");
@@ -30,6 +26,18 @@ let sortState = {
   key: "confidence",
   direction: "desc",
 };
+
+let timeRangeControls = null;
+if (window.TimeRangeControls) {
+  timeRangeControls = window.TimeRangeControls.init({
+    defaultPreset: "all",
+    onChange: function () {
+      renderActiveFilterChips();
+      loadAlerts();
+    },
+    applyButtonId: "applyTimeRange",
+  });
+}
 
 const FILTER_FIELD_OPTIONS = [
   { value: "endpointID", label: "Endpoint ID", type: "string" },
@@ -291,6 +299,7 @@ function setSort(key) {
     sortState.direction = key === "confidence" || key === "tsEnd" ? "desc" : "asc";
   }
 
+  syncUrlFromFilters();
   sortAndRenderAlerts();
 }
 
@@ -815,13 +824,13 @@ function renderAlertHeader(detail, windows) {
       "</button>" +
     "</header>" +
     "<dl class='alert-fact-grid'>" +
-      renderFact("Endpoint", detail.endpointID, { strong: true }) +
+      renderFact("Endpoint", detail.name || detail.endpointID, { strong: true }) +
+      renderFact("Endpoint ID", detail.endpointID) +
       renderFact("Hostname", detail.hostname) +
       renderFact("IP address", detail.ip) +
       renderFact("First seen", firstSeen) +
       renderFact("Last seen", lastSeen) +
       renderFact("Duration", duration) +
-      renderFact("Windows", windows.length, { strong: true }) +
       renderFact("Matched events", matchedCount, { strong: true }) +
     "</dl>"
   );
@@ -1195,16 +1204,18 @@ function renderRows(alerts) {
 
   for (const alert of alerts) {
     const tr = document.createElement("tr");
-    tr.className = "alert-row";
+    const isHighConfidence = Number(alert.confidence) >= 80;
+    tr.className = "alert-row" + (isHighConfidence ? " alert-row-high-confidence" : "");
     tr.dataset.alertId = String(alert.alertID);
     tr.setAttribute("role", "button");
     tr.setAttribute("tabindex", "0");
     tr.setAttribute("aria-expanded", "false");
     tr.setAttribute("aria-label", "Alert " + alert.alertID + ", click to expand");
+    const endpointUrl = buildEndpointAlertsUrl(alert.endpointID);
     tr.innerHTML =
       "<td>" + renderConfidenceBadge(alert.confidence) + "</td>" +
       "<td>" + renderEventCell(alert) + "</td>" +
-      "<td>" + escapeHtml(alert.endpointID) + "</td>" +
+      "<td><a class='endpoint-link' href='" + escapeHtml(endpointUrl) + "' title='" + escapeHtml(alert.endpointID) + "' onclick='event.stopPropagation()'>" + escapeHtml(alert.name || alert.endpointID) + "</a></td>" +
       "<td><span class='period-badge'>" + periodIcon() + formatPeriod(alert.periodTs) + "</span></td>" +
       "<td>" + renderTimestampCell(alert.tsBegin) + "</td>" +
       "<td>" + renderTimestampCell(alert.tsEnd) + "</td>" +
@@ -1227,41 +1238,138 @@ function renderRows(alerts) {
   table.hidden = alerts.length === 0;
 }
 
-function updateCustomTimeVisibility() {
-  const isCustom = timePresetInput.value === "custom";
-  timeFromWrap.hidden = !isCustom;
-  timeToWrap.hidden = !isCustom;
+function buildEndpointAlertsUrl(endpointID) {
+  const params = new URLSearchParams();
+  params.set("endpointID", endpointID);
+  return "/alerts?" + params.toString();
 }
 
-function setFiltersExpanded(expanded) {
-  form.hidden = !expanded;
-  form.classList.toggle("is-collapsed", !expanded);
-  toggleFiltersButton.setAttribute("aria-expanded", expanded ? "true" : "false");
-  toggleFiltersButton.querySelector(".filter-toggle-label").textContent = expanded ? "Hide filters" : "Show filters";
-  toggleFiltersButton.querySelector(".filter-toggle-chevron").textContent = expanded ? "▾" : "▸";
+function collectActiveFilterDescriptors() {
+  const chips = [];
+  if (timeRangeControls) {
+    const timeParams = timeRangeControls.buildQueryParams();
+    const preset = timeParams.get("timePreset") || "all";
+    if (preset !== "all") {
+      chips.push({
+        key: "time",
+        label: "Time: " + timeRangeControls.getLabel(),
+      });
+    }
+  }
+
+  const endpointID = endpointInput.value.trim();
+  if (endpointID) {
+    chips.push({ key: "endpointID", label: "Endpoint: " + endpointID });
+  }
+
+  const eventName = eventNameInput.value.trim();
+  if (eventName) {
+    chips.push({ key: "eventName", label: "Event: " + eventName });
+  }
+
+  const nativeEventID = nativeEventIDInput.value.trim();
+  if (nativeEventID) {
+    chips.push({ key: "nativeEventID", label: "Event ID: " + nativeEventID });
+  }
+
+  const minConfidence = minConfidenceInput.value.trim();
+  if (minConfidence) {
+    chips.push({ key: "minConfidence", label: "Min confidence: " + minConfidence });
+  }
+
+  for (const rule of collectFilterRulesFromDom()) {
+    const valueLabel = rule.values ? rule.values.join(", ") : rule.value;
+    chips.push({
+      key: "rule:" + rule.field + ":" + rule.operator + ":" + valueLabel,
+      label: rule.field + " " + rule.operator + " " + valueLabel,
+      rule: rule,
+    });
+  }
+
+  return chips;
 }
 
-timePresetInput.addEventListener("change", updateCustomTimeVisibility);
-
-toggleFiltersButton.addEventListener("click", function () {
-  setFiltersExpanded(form.hidden || form.classList.contains("is-collapsed"));
-});
-
-function toIsoFromLocalInput(value) {
-  if (!value) {
-    return null;
+function renderActiveFilterChips() {
+  if (!activeFilterChips) {
+    return;
   }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return null;
+  const descriptors = collectActiveFilterDescriptors();
+  activeFilterChips.innerHTML = "";
+  if (!descriptors.length) {
+    activeFilterChips.hidden = true;
+    return;
   }
-  return date.toISOString();
+
+  for (const descriptor of descriptors) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "filter-chip";
+    button.dataset.chipKey = descriptor.key;
+    if (descriptor.rule) {
+      button.dataset.chipRule = JSON.stringify(descriptor.rule);
+    }
+    button.innerHTML =
+      "<span>" + escapeHtml(descriptor.label) + "</span>" +
+      "<span class='filter-chip-remove' aria-hidden='true'>&times;</span>";
+    activeFilterChips.appendChild(button);
+  }
+  activeFilterChips.hidden = false;
+}
+
+function clearFilterChip(key, ruleJson) {
+  if (key === "time" && timeRangeControls) {
+    timeRangeControls.setPreset("all", { timeFrom: "", timeTo: "" });
+  } else if (key === "endpointID") {
+    endpointInput.value = "";
+  } else if (key === "eventName") {
+    eventNameInput.value = "";
+  } else if (key === "nativeEventID") {
+    nativeEventIDInput.value = "";
+  } else if (key === "minConfidence") {
+    minConfidenceInput.value = "";
+  } else if (key.startsWith("rule:") && ruleJson) {
+    try {
+      const targetRule = JSON.parse(ruleJson);
+      for (const row of filterRulesList.querySelectorAll(".filter-rule-row")) {
+        const field = row.querySelector(".filter-rule-field").value;
+        const operator = row.querySelector(".filter-rule-operator").value;
+        const value = row.querySelector(".filter-rule-value").value.trim();
+        if (field === targetRule.field && operator === targetRule.operator && value === (targetRule.value || (targetRule.values || []).join(", "))) {
+          row.remove();
+          break;
+        }
+      }
+    } catch (error) {
+      // Ignore malformed chip metadata.
+    }
+  }
+  renderActiveFilterChips();
+  loadAlerts();
+}
+
+if (activeFilterChips) {
+  activeFilterChips.addEventListener("click", function (event) {
+    const chip = event.target.closest(".filter-chip");
+    if (!chip) {
+      return;
+    }
+    clearFilterChip(chip.dataset.chipKey, chip.dataset.chipRule);
+  });
+}
+
+function syncUrlFromFilters() {
+  const params = buildQueryParams();
+  const query = params.toString();
+  const nextUrl = query ? ("?" + query) : window.location.pathname;
+  window.history.replaceState(null, "", nextUrl);
 }
 
 function buildQueryParams() {
   const params = new URLSearchParams();
-  if (timePresetInput.value !== "all") {
-    params.set("timePreset", timePresetInput.value);
+  if (timeRangeControls) {
+    for (const [key, value] of timeRangeControls.buildQueryParams()) {
+      params.set(key, value);
+    }
   }
   params.set("sort", sortState.key);
   params.set("order", sortState.direction);
@@ -1276,19 +1384,74 @@ function buildQueryParams() {
     params.set("minConfidence", minConfidence);
   }
 
-  if (timePresetInput.value === "custom") {
-    const timeFrom = toIsoFromLocalInput(timeFromInput.value);
-    const timeTo = toIsoFromLocalInput(timeToInput.value);
-    if (timeFrom) {
-      params.set("timeFrom", timeFrom);
-    }
-    if (timeTo) {
-      params.set("timeTo", timeTo);
-    }
-  }
-
   return params;
 }
+
+async function loadAlerts() {
+  if (window.PageStatus) {
+    PageStatus.showLoading(statusEl, "Loading alerts...");
+  } else {
+    statusEl.textContent = "Loading...";
+  }
+  table.hidden = true;
+  tbody.innerHTML = "";
+
+  try {
+    const response = await fetch("/api/alerts?" + buildQueryParams().toString());
+    const data = await response.json();
+
+    if (!response.ok) {
+      summaryRow.hidden = true;
+      if (window.PageStatus) {
+        PageStatus.showError(statusEl, data.error || "Failed to load alerts");
+      } else {
+        statusEl.textContent = data.error || "Failed to load alerts";
+      }
+      renderActiveFilterChips();
+      return;
+    }
+
+    syncUrlFromFilters();
+    renderActiveFilterChips();
+    currentAlerts = Array.isArray(data.alerts) ? data.alerts : [];
+    sortAndRenderAlerts();
+
+    if (currentAlerts.length === 0) {
+      table.hidden = true;
+      if (window.PageStatus) {
+        PageStatus.showEmpty(statusEl, {
+          message: "No alerts match these filters. Try widening the time range or clearing a filter.",
+        });
+      }
+      return;
+    }
+
+    if (window.PageStatus) {
+      PageStatus.showSuccess(statusEl, "Found " + data.count + " alert(s)");
+    } else {
+      statusEl.textContent = "Found " + data.count + " alert(s)";
+    }
+  } catch (error) {
+    summaryRow.hidden = true;
+    if (window.PageStatus) {
+      PageStatus.showError(statusEl, "Network error while loading alerts.");
+    } else {
+      statusEl.textContent = "Network error";
+    }
+  }
+}
+
+function setFiltersExpanded(expanded) {
+  form.hidden = !expanded;
+  form.classList.toggle("is-collapsed", !expanded);
+  toggleFiltersButton.setAttribute("aria-expanded", expanded ? "true" : "false");
+  toggleFiltersButton.querySelector(".filter-toggle-label").textContent = expanded ? "Hide filters" : "Show filters";
+  toggleFiltersButton.querySelector(".filter-toggle-chevron").textContent = expanded ? "▾" : "▸";
+}
+
+toggleFiltersButton.addEventListener("click", function () {
+  setFiltersExpanded(form.hidden || form.classList.contains("is-collapsed"));
+});
 
 async function loadMeta() {
   try {
@@ -1309,46 +1472,22 @@ async function loadMeta() {
   }
 }
 
-async function loadAlerts() {
-  statusEl.textContent = "Loading...";
-  table.hidden = true;
-  tbody.innerHTML = "";
-
-  try {
-    const response = await fetch("/api/alerts?" + buildQueryParams().toString());
-    const data = await response.json();
-
-    if (!response.ok) {
-      statusEl.textContent = data.error || "Failed to load alerts";
-      summaryRow.hidden = true;
-      return;
-    }
-
-    statusEl.textContent = "Found " + data.count + " alert(s)";
-    currentAlerts = Array.isArray(data.alerts) ? data.alerts : [];
-    sortAndRenderAlerts();
-  } catch (error) {
-    statusEl.textContent = "Network error";
-    summaryRow.hidden = true;
-  }
-}
-
 form.addEventListener("submit", function (event) {
   event.preventDefault();
   loadAlerts();
 });
 
 resetFiltersButton.addEventListener("click", function () {
-  timePresetInput.value = "all";
-  timeFromInput.value = "";
-  timeToInput.value = "";
+  if (timeRangeControls) {
+    timeRangeControls.setPreset("all", { timeFrom: "", timeTo: "" });
+  }
   endpointInput.value = "";
   eventNameInput.value = "";
   nativeEventIDInput.value = "";
   minConfidenceInput.value = "";
   clearFilterRules();
   sortState = { key: "confidence", direction: "desc" };
-  updateCustomTimeVisibility();
+  setFiltersExpanded(false);
   loadAlerts();
 });
 
@@ -1359,14 +1498,28 @@ addFilterRuleButton.addEventListener("click", function () {
 function applyQueryParamsFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const endpointID = params.get("endpointID");
-  const timePreset = params.get("timePreset");
+  const eventName = params.get("eventName");
   const nativeEventID = params.get("nativeEventID");
   const minConfidence = params.get("minConfidence");
+  const sort = params.get("sort");
+  const order = params.get("order");
   const rawFilters = params.get("filters");
   let hasFilters = false;
 
+  if (timeRangeControls) {
+    timeRangeControls.applyFromSearchParams(params);
+    if (params.get("timePreset") && params.get("timePreset") !== "all") {
+      hasFilters = true;
+    }
+  }
+
   if (endpointID) {
     endpointInput.value = endpointID;
+    hasFilters = true;
+  }
+
+  if (eventName) {
+    eventNameInput.value = eventName;
     hasFilters = true;
   }
 
@@ -1378,6 +1531,13 @@ function applyQueryParamsFromUrl() {
   if (minConfidence) {
     minConfidenceInput.value = minConfidence;
     hasFilters = true;
+  }
+
+  if (sort) {
+    sortState.key = sort;
+  }
+  if (order === "asc" || order === "desc") {
+    sortState.direction = order;
   }
 
   if (rawFilters) {
@@ -1397,18 +1557,11 @@ function applyQueryParamsFromUrl() {
     }
   }
 
-  if (timePreset && timePresetInput.querySelector('option[value="' + timePreset + '"]')) {
-    timePresetInput.value = timePreset;
-    updateCustomTimeVisibility();
-    hasFilters = true;
-  }
-
   if (hasFilters) {
     setFiltersExpanded(true);
   }
 }
 
-updateCustomTimeVisibility();
 setFiltersExpanded(false);
 applyQueryParamsFromUrl();
 loadMeta();

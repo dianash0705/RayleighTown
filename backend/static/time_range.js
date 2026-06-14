@@ -17,6 +17,23 @@
     return date.toISOString();
   }
 
+  function fromIsoToLocalInput(isoValue) {
+    if (!isoValue) {
+      return "";
+    }
+    const date = new Date(isoValue);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+    const pad = function (part) {
+      return String(part).padStart(2, "0");
+    };
+    return (
+      date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
+      "T" + pad(date.getHours()) + ":" + pad(date.getMinutes())
+    );
+  }
+
   function initTimeRangeControls(options) {
     const opts = options || {};
     const root = document.getElementById(opts.rootId || "timeRange");
@@ -91,6 +108,34 @@
       return PRESET_LABELS[currentPreset] || PRESET_LABELS.last_week;
     }
 
+    function setPreset(preset, options) {
+      const opts = options || {};
+      if (preset && PRESET_LABELS[preset]) {
+        currentPreset = preset;
+      }
+      if (timeFromInput && opts.timeFrom !== undefined) {
+        timeFromInput.value = opts.timeFrom;
+      }
+      if (timeToInput && opts.timeTo !== undefined) {
+        timeToInput.value = opts.timeTo;
+      }
+      syncUi();
+    }
+
+    function applyFromSearchParams(params) {
+      const preset = params.get("timePreset");
+      if (preset && PRESET_LABELS[preset]) {
+        currentPreset = preset;
+      }
+      if (timeFromInput && params.get("timeFrom")) {
+        timeFromInput.value = fromIsoToLocalInput(params.get("timeFrom"));
+      }
+      if (timeToInput && params.get("timeTo")) {
+        timeToInput.value = fromIsoToLocalInput(params.get("timeTo"));
+      }
+      syncUi();
+    }
+
     toggle.addEventListener("click", function (event) {
       event.stopPropagation();
       if (isOpen()) {
@@ -140,6 +185,8 @@
     return {
       buildQueryParams: buildQueryParams,
       getLabel: getLabel,
+      setPreset: setPreset,
+      applyFromSearchParams: applyFromSearchParams,
     };
   }
 

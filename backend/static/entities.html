@@ -35,8 +35,8 @@
             <button type="button" class="time-range-preset" data-preset="all" role="menuitem">All time</button>
             <button type="button" class="time-range-preset" data-preset="custom" role="menuitem">Custom range</button>
             <div class="time-range-custom" id="timeRangeCustom" hidden>
-              <label>From<input id="timeFrom" type="datetime-local" /></label>
-              <label>To<input id="timeTo" type="datetime-local" /></label>
+              <label>From<input id="timeFrom" type="datetime-local" lang="en-US" /></label>
+              <label>To<input id="timeTo" type="datetime-local" lang="en-US" /></label>
               <button type="button" id="applyTimeRange" class="secondary-button">Apply</button>
             </div>
           </div>
@@ -61,16 +61,18 @@
       <div class="table-scroll">
         <table id="entitiesTable" hidden>
           <colgroup>
-            <col class="col-entity-id" />
             <col class="col-entity-name" />
+            <col class="col-entity-id" />
             <col class="col-entity-ip" />
+            <col class="col-entity-status" />
             <col class="col-entity-alerts" />
           </colgroup>
           <thead>
             <tr>
-              <th class="sortable" data-sort-key="endpointID"><button type="button">Endpoint ID <span class="sort-indicator"></span></button></th>
               <th class="sortable" data-sort-key="name"><button type="button">Name <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="endpointID"><button type="button">Endpoint ID <span class="sort-indicator"></span></button></th>
               <th class="sortable" data-sort-key="ip"><button type="button">IP <span class="sort-indicator"></span></button></th>
+              <th class="sortable" data-sort-key="lastSeenAt"><button type="button">Status <span class="sort-indicator"></span></button></th>
               <th class="sortable" data-sort-key="alertsLastWeek"><button type="button">Alerts <span class="sort-indicator">▼</span></button></th>
             </tr>
           </thead>
@@ -80,6 +82,9 @@
     </div>
   </div>
 
+  <script src="relative_time.js"></script>
+  <script src="ui.js"></script>
+  <script src="auth.js"></script>
   <script src="time_range.js"></script>
   <script src="entities.js"></script>
 </body>

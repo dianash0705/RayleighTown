@@ -42,6 +42,7 @@ body {
 }
 
 .header {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: end;
@@ -253,10 +254,10 @@ table {
 
 col.col-confidence { width: 132px; }
 col.col-event { width: 220px; }
-col.col-endpoint { width: 108px; }
+col.col-endpoint { width: 150px; }
 col.col-period { width: 156px; }
-col.col-start { width: 210px; }
-col.col-end { width: 210px; }
+col.col-start { width: 196px; }
+col.col-end { width: 196px; }
 col.col-windows { width: 120px; }
 col.col-alert-id { width: 86px; }
 
@@ -277,6 +278,8 @@ th {
   position: sticky;
   top: 0;
   z-index: 2;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 th.sortable {
@@ -300,6 +303,10 @@ th.sortable button {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+th.sortable button {
+  white-space: nowrap;
 }
 
 th.sortable button:hover {
@@ -343,7 +350,6 @@ tbody td:last-child {
 }
 
 tbody td:nth-child(1),
-tbody td:nth-child(3),
 tbody td:nth-child(7) {
   text-align: center;
 }
@@ -861,6 +867,13 @@ tbody td:nth-child(4) {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+  /* Stay pinned to the right even when the header wraps this onto its own line
+     (otherwise space-between left-aligns a lone wrapped child). */
+  margin-left: auto;
+}
+
+.header > .page-nav {
+  margin-left: auto;
 }
 
 .time-range {
@@ -959,6 +972,12 @@ tbody td:nth-child(4) {
   margin-top: 6px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
+}
+
+/* Without this, the class rule above overrides the `hidden` attribute and the
+   custom date fields show even when a non-custom preset is selected. */
+.time-range-custom[hidden] {
+  display: none;
 }
 
 .time-range-custom label {
@@ -1096,7 +1115,27 @@ details[open] .summary-chevron {
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
 }
 
-.filter-shell {
+.alerts-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.alerts-controls .chip-row {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+.alerts-controls .filter-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.filter-panel {
+  width: 100%;
+  box-sizing: border-box;
   margin-bottom: 20px;
 }
 
@@ -1379,11 +1418,12 @@ tr.alert-row.is-expanded {
 
 col.col-entity-id { width: 140px; }
 col.col-entity-name { width: 260px; }
-col.col-entity-ip { width: 180px; }
-col.col-entity-alerts { width: 180px; }
+col.col-entity-ip { width: 160px; }
+col.col-entity-status { width: 170px; }
+col.col-entity-alerts { width: 120px; }
 
 #entitiesTable {
-  min-width: 760px;
+  min-width: 860px;
 }
 
 #entitiesTable th,
@@ -1399,6 +1439,11 @@ col.col-entity-alerts { width: 180px; }
 
 .entity-link:hover {
   text-decoration: underline;
+}
+
+.entity-id {
+  color: var(--text-muted);
+  font-size: 0.86rem;
 }
 
 .entity-alert-count {
@@ -1660,32 +1705,25 @@ col.col-entity-alerts { width: 180px; }
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.35);
   border: 1px solid var(--border);
-  text-decoration: none;
   color: inherit;
   transition: background-color 0.15s ease, transform 0.15s ease;
 }
 
 .recent-alert-card:hover {
   background: rgba(255, 255, 255, 0.52);
-  transform: translateY(-1px);
 }
 
-.recent-alert-main {
+.recent-alert-main-link {
   display: grid;
   gap: 4px;
   min-width: 0;
+  flex: 1 1 auto;
+  text-decoration: none;
+  color: inherit;
 }
 
-.recent-alert-event {
-  font-weight: 700;
-  color: var(--text-main);
-}
-
-.recent-alert-meta,
-.recent-alert-time {
-  font-size: 0.84rem;
-  font-weight: 600;
-  color: var(--text-muted);
+.recent-alert-main-link:hover .recent-alert-event {
+  color: var(--icon-color);
 }
 
 .recent-alert-confidence {
@@ -1700,6 +1738,11 @@ col.col-entity-alerts { width: 180px; }
   background: var(--confidence-bg);
   color: var(--text-light);
   flex: 0 0 auto;
+  text-decoration: none;
+}
+
+.recent-alert-confidence:hover {
+  filter: brightness(1.05);
 }
 
 .recent-alert-empty {
@@ -1752,6 +1795,575 @@ col.col-entity-alerts { width: 180px; }
   }
 
   .dashboard-main-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- Auth (login / register) ---------- */
+
+.auth-body {
+  align-items: center;
+}
+
+.auth-card {
+  background: var(--container-bg);
+  width: 100%;
+  max-width: 420px;
+  padding: 32px 30px 28px;
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  align-self: center;
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.auth-brand .title-icon {
+  width: 34px;
+  height: 34px;
+}
+
+.auth-brand h1 {
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text-main);
+}
+
+.auth-tagline {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.auth-toggle {
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  background: rgba(115, 87, 81, 0.12);
+  border-radius: 12px;
+  margin-bottom: 22px;
+}
+
+.auth-toggle-btn {
+  flex: 1;
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+  padding: 9px 10px;
+  border-radius: 9px;
+  font-size: 0.9rem;
+}
+
+.auth-toggle-btn:hover {
+  background: rgba(115, 87, 81, 0.12);
+  color: var(--text-main);
+  transform: none;
+  box-shadow: none;
+}
+
+.auth-toggle-btn.is-active {
+  background: var(--chip-bg);
+  color: var(--text-light);
+}
+
+.auth-toggle-btn.is-active:hover {
+  background: var(--btn-hover);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+}
+
+/* The global `form { display: flex }` would otherwise override [hidden]. */
+.auth-form[hidden] {
+  display: none;
+}
+
+.auth-form label {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.auth-form input {
+  width: 100%;
+}
+
+.auth-form button[type="submit"] {
+  margin-top: 6px;
+}
+
+.auth-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.auth-status {
+  margin-top: 16px;
+  min-height: 18px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.auth-status.is-error {
+  color: var(--btn-hover);
+}
+
+/* ---------- Nav account chip + logout ---------- */
+
+.nav-logout {
+  padding: 8px 14px;
+  font-size: 0.9rem;
+  align-self: center;
+}
+
+/* Time-of-day greeting shown at the top-left, above the page title. */
+/* Top-right greeting, sitting on the same line as the big page title. */
+.page-greeting {
+  position: absolute;
+  top: 6px;
+  right: 0;
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.page-greeting strong {
+  color: var(--text-main);
+  font-weight: 700;
+}
+
+/* ---------- Admin page ---------- */
+
+.admin-section {
+  margin-bottom: 22px;
+}
+
+.admin-status {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+  min-height: 18px;
+}
+
+.admin-status.is-error {
+  color: var(--btn-hover);
+}
+
+.admin-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.admin-inline-form label {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.admin-checkbox {
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 8px;
+  text-transform: none;
+  padding-bottom: 10px;
+}
+
+.admin-checkbox input {
+  width: auto;
+}
+
+.admin-actions-col {
+  text-align: left;
+  white-space: nowrap;
+}
+
+.admin-row-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.row-action {
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.row-action.danger {
+  background: rgba(191, 67, 66, 0.16);
+  color: var(--btn-hover);
+}
+
+.row-action.danger:hover {
+  background: rgba(191, 67, 66, 0.28);
+}
+
+.role-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: rgba(115, 87, 81, 0.16);
+  color: var(--text-muted);
+}
+
+.role-badge.is-admin {
+  background: var(--chip-bg);
+  color: var(--text-light);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.admin-section table {
+  min-width: 0;
+}
+
+.admin-section tbody td {
+  text-align: left;
+}
+
+.admin-section tbody td:nth-child(1) {
+  text-align: left;
+}
+
+.admin-section .table-shell {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#endpointsTable {
+  table-layout: fixed;
+  width: 100%;
+}
+
+/* Fixed shares for four columns; hostname absorbs whatever is left after Actions (JS-sized). */
+col.col-admin-ep-id { width: 16%; }
+col.col-admin-ep-name { width: 14%; }
+col.col-admin-ep-ip { width: 11%; }
+col.col-admin-ep-seen { width: 12%; }
+
+#endpointsTable tbody td.admin-actions-col,
+#endpointsTable th.admin-actions-col {
+  white-space: nowrap;
+  overflow: visible;
+  vertical-align: top;
+}
+
+#endpointsTable tbody td.admin-actions-col {
+  overflow: visible;
+}
+
+#endpointsTable .admin-row-actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  width: max-content;
+}
+
+.admin-section td.admin-actions-col {
+  overflow: visible;
+  white-space: nowrap;
+  text-overflow: clip;
+}
+
+#endpointsTable td:not(.admin-actions-col) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+#endpointsTable td:not(.admin-actions-col) code {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.admin-section .table-scroll {
+  overflow-x: hidden;
+}
+
+.endpoint-row.is-secret-expanded td {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.endpoint-secret-row td {
+  padding: 4px 14px 14px;
+  border-top: none;
+  background: rgba(231, 215, 193, 0.35);
+  text-align: left;
+  vertical-align: top;
+}
+
+.endpoint-secret-panel {
+  border: 1px solid rgba(191, 67, 66, 0.28);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.45);
+  text-align: left;
+}
+
+.endpoint-secret-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.endpoint-secret-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.secret-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.endpoint-secret-hint {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--btn-hover);
+  text-align: left;
+}
+
+.endpoint-secret-note {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  text-align: left;
+}
+
+.endpoint-secret-value,
+.admin-section code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 6px 10px;
+  border-radius: 8px;
+  word-break: break-all;
+  color: var(--text-main);
+}
+
+.secret-value-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.secret-value-row code {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.copy-button {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
+.copy-button.is-copied {
+  background: rgba(64, 140, 66, 0.2);
+  color: #2f6b31;
+}
+
+/* The blinking insertion caret should only appear in fields the user can actually
+   edit. Hide it everywhere else (focusable rows, headings, caret browsing, etc.)
+   while leaving text fully selectable/copyable. */
+body {
+  caret-color: transparent;
+}
+
+input,
+textarea,
+[contenteditable="true"] {
+  caret-color: auto;
+}
+
+.endpoint-name {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* --- Shared shell & page status --- */
+
+.org-badge {
+  margin: 0 0 4px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* --- Alerts filter chips --- */
+
+.active-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.active-filter-chips[hidden] {
+  display: none !important;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--text-main);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.filter-chip:hover {
+  background: rgba(255, 255, 255, 0.78);
+  border-color: rgba(115, 87, 81, 0.35);
+}
+
+.filter-chip-remove {
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+/* --- Alerts table polish --- */
+
+tbody tr.alert-row.alert-row-high-confidence {
+  box-shadow: inset 3px 0 0 rgba(115, 87, 81, 0.55);
+}
+
+.endpoint-link {
+  color: var(--icon-color);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.endpoint-link:hover {
+  text-decoration: underline;
+}
+
+/* --- Entity health --- */
+
+.entity-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.health-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.65);
+}
+
+.health-dot--active {
+  background: #3f8f4a;
+}
+
+.health-dot--stale {
+  background: #c49a2e;
+}
+
+.health-dot--never {
+  background: #b0aaa4;
+}
+
+.entity-health-label {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* --- Admin onboarding --- */
+
+.endpoint-next-steps {
+  margin: 12px 0 0;
+  padding-left: 1.2rem;
+  text-align: left;
+  color: var(--text-main);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.endpoint-next-steps li + li {
+  margin-top: 6px;
+}
+
+.endpoint-next-steps a {
+  color: var(--icon-color);
+  font-weight: 700;
+}
+
+.recent-alert-event {
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.recent-alert-meta,
+.recent-alert-time {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+@media (max-width: 700px) {
+  .endpoint-secret-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RayleighTown</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="auth-body">
+
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="title-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.3 6.8 3.8L12 12 5.2 8.1 12 4.3zM5 9.9l6 3.3v6.6L5 16.4V9.9zm14 0v6.5l-6 3.4v-6.6l6-3.3z"/></svg>
+      </span>
+      <div>
+        <h1>RayleighTown</h1>
+        <p class="auth-tagline">Periodic threat detection for your endpoints.</p>
+      </div>
+    </div>
+
+    <div class="auth-toggle" role="tablist">
+      <button type="button" class="auth-toggle-btn is-active" id="showLogin" role="tab" aria-selected="true">Sign in</button>
+      <button type="button" class="auth-toggle-btn" id="showRegister" role="tab" aria-selected="false">Create organization</button>
+    </div>
+
+    <form id="loginForm" class="auth-form">
+      <label>Organization
+        <input id="loginOrg" autocomplete="organization" placeholder="Acme Security" list="recentOrgsList" required />
+      </label>
+      <label>Username
+        <input id="loginUser" autocomplete="username" placeholder="your username" required />
+      </label>
+      <label>Password
+        <input id="loginPassword" type="password" autocomplete="current-password" placeholder="••••••••" required />
+      </label>
+      <button type="submit">Sign in</button>
+    </form>
+
+    <form id="registerForm" class="auth-form" hidden>
+      <p class="auth-hint">Creating an organization also creates its first administrator (the super admin).</p>
+      <label>Organization name
+        <input id="registerOrg" autocomplete="organization" placeholder="Acme Security" list="recentOrgsList" required />
+      </label>
+      <label>Admin username
+        <input id="registerUser" autocomplete="username" placeholder="admin" required />
+      </label>
+      <label>Admin password
+        <input id="registerPassword" type="password" autocomplete="new-password" placeholder="choose a strong password" required />
+      </label>
+      <button type="submit">Create organization</button>
+    </form>
+
+    <div id="authStatus" class="auth-status" role="alert"></div>
+  </div>
+
+  <datalist id="recentOrgsList"></datalist>
+
+  <script src="login.js"></script>
+</body>
+</html>

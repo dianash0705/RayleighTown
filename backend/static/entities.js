@@ -22,6 +22,40 @@ if (window.TimeRangeControls) {
   });
 }
 
+const ENTITY_ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function entityHealthState(lastSeenAt) {
+  if (lastSeenAt === null || lastSeenAt === undefined || lastSeenAt === "") {
+    return { level: "never", label: "Never seen" };
+  }
+
+  const seenMs = Number(lastSeenAt);
+  if (!Number.isFinite(seenMs)) {
+    return { level: "never", label: "Never seen" };
+  }
+
+  const ageMs = Date.now() - seenMs;
+  const relativeLabel = window.formatRelativeTimestamp
+    ? formatRelativeTimestamp(lastSeenAt)
+    : "Last seen";
+
+  if (ageMs <= ENTITY_ACTIVE_WINDOW_MS) {
+    return { level: "active", label: relativeLabel };
+  }
+
+  return { level: "stale", label: relativeLabel };
+}
+
+function renderEntityStatusCell(entity) {
+  const health = entityHealthState(entity.lastSeenAt);
+  return (
+    "<span class='entity-health'>" +
+      "<span class='health-dot health-dot--" + health.level + "' aria-hidden='true'></span>" +
+      "<span class='entity-health-label'>" + escapeHtml(health.label) + "</span>" +
+    "</span>"
+  );
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -46,6 +80,11 @@ function getSortValue(entity, key) {
 
   if (key === "endpointID" || key === "name" || key === "ip") {
     return String(value).toLowerCase();
+  }
+
+  if (key === "lastSeenAt") {
+    const seen = Number(value);
+    return Number.isFinite(seen) ? seen : -1;
   }
 
   const number = Number(value);
@@ -111,10 +150,12 @@ function renderRows(entities) {
     const alertsUrl = buildAlertsUrl(entity.endpointID);
     const alertCount = Number(entity.alertCount ?? entity.alertsLastWeek ?? 0);
 
+    const primaryName = entity.name ? escapeHtml(entity.name) : displayValue(entity.endpointID);
     tr.innerHTML =
-      "<td><a class='entity-link' href='" + escapeHtml(alertsUrl) + "'>" + displayValue(entity.endpointID) + "</a></td>" +
-      "<td>" + displayValue(entity.name) + "</td>" +
+      "<td><a class='entity-link' href='" + escapeHtml(alertsUrl) + "'>" + primaryName + "</a></td>" +
+      "<td><span class='entity-id'>" + displayValue(entity.endpointID) + "</span></td>" +
       "<td>" + displayValue(entity.ip) + "</td>" +
+      "<td>" + renderEntityStatusCell(entity) + "</td>" +
       "<td><span class='entity-alert-count" + (alertCount > 0 ? " has-alerts" : "") + "'>" + alertCount + "</span></td>";
 
     tbody.appendChild(tr);
@@ -153,7 +194,11 @@ for (const header of sortableHeaders) {
 }
 
 async function loadEntities() {
-  statusEl.textContent = "Loading...";
+  if (window.PageStatus) {
+    PageStatus.showLoading(statusEl, "Loading entities...");
+  } else {
+    statusEl.textContent = "Loading...";
+  }
   table.hidden = true;
   tbody.innerHTML = "";
 
@@ -163,8 +208,12 @@ async function loadEntities() {
     const data = await response.json();
 
     if (!response.ok) {
-      statusEl.textContent = data.error || "Failed to load entities";
       summaryRow.hidden = true;
+      if (window.PageStatus) {
+        PageStatus.showError(statusEl, data.error || "Failed to load entities");
+      } else {
+        statusEl.textContent = data.error || "Failed to load entities";
+      }
       return;
     }
 
@@ -172,12 +221,33 @@ async function loadEntities() {
       chipAlertsLabel.textContent = "Alerts (" + timeRangeControls.getLabel().toLowerCase() + ")";
     }
 
-    statusEl.textContent = "Found " + data.count + " entit" + (data.count === 1 ? "y" : "ies");
     currentEntities = Array.isArray(data.entities) ? data.entities : [];
     sortAndRenderEntities();
+
+    if (currentEntities.length === 0) {
+      table.hidden = true;
+      if (window.PageStatus) {
+        PageStatus.showEmpty(statusEl, {
+          message: "No entities yet. Registered endpoints will appear here once an agent uploads logs.",
+        });
+      } else {
+        statusEl.textContent = "No entities found";
+      }
+      return;
+    }
+
+    if (window.PageStatus) {
+      PageStatus.showSuccess(statusEl, "Found " + data.count + " entit" + (data.count === 1 ? "y" : "ies"));
+    } else {
+      statusEl.textContent = "Found " + data.count + " entit" + (data.count === 1 ? "y" : "ies");
+    }
   } catch (error) {
-    statusEl.textContent = "Network error";
     summaryRow.hidden = true;
+    if (window.PageStatus) {
+      PageStatus.showError(statusEl, "Network error while loading entities.");
+    } else {
+      statusEl.textContent = "Network error";
+    }
   }
 }
 

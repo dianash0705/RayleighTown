@@ -1,12 +1,34 @@
 param(
-    [string]$BackendUrl = "http://localhost:2222/api/logs/upload",
+    [string]$BackendUrl,
     [string]$OutputDir = "$PSScriptRoot\out",
-    [string]$EndpointID = "123",
+    [string]$EndpointID,
+    [string]$EndpointSecret,
+    [string]$ConfigPath = "$PSScriptRoot\agent_config.json",
     [string]$CustomLogPath
 )
 
 $ErrorActionPreference = "Stop"
 $logID = "0"
+
+# Load the agent identity (endpoint ID + secret) from the config file written when
+# the endpoint was registered in the admin page. Explicit parameters override it.
+if (Test-Path -LiteralPath $ConfigPath) {
+    try {
+        $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+        if (-not $EndpointID -and $config.endpointID) { $EndpointID = [string]$config.endpointID }
+        if (-not $EndpointSecret -and $config.endpointSecret) { $EndpointSecret = [string]$config.endpointSecret }
+        if (-not $BackendUrl -and $config.backendUrl) { $BackendUrl = [string]$config.backendUrl }
+    }
+    catch {
+        throw "Failed to read agent config '$ConfigPath': $($_.Exception.Message)"
+    }
+}
+
+if (-not $BackendUrl) { $BackendUrl = "http://localhost:2222/api/logs/upload" }
+
+if (-not $EndpointID -or -not $EndpointSecret) {
+    throw "Missing endpoint credentials. Provide -EndpointID and -EndpointSecret, or create '$ConfigPath' (see agent_config.example.json)."
+}
 
 function Get-SourceNameFromJsonLine {
     param(
@@ -104,7 +126,7 @@ try {
         $agentIp = $null
     }
 
-    $curlArgs = @('-sS','-f','-X','POST',"$BackendUrl","-F","endpointID=$EndpointID","-F","logID=$logID","-F","log_file=@$logFilePath")
+    $curlArgs = @('-sS','-f','-X','POST',"$BackendUrl","-F","endpointID=$EndpointID","-F","endpointSecret=$EndpointSecret","-F","logID=$logID","-F","log_file=@$logFilePath")
     if ($agentHostname) {
         $curlArgs += '-F'
         $curlArgs += "hostname=$agentHostname"

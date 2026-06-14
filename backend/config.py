@@ -6,6 +6,15 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 DB_DIR = BASE_DIR / "data"
 DB_PATH = DB_DIR / "logs.db"
 
+# Auth / session settings.
+# The Flask session secret is generated on first run and persisted here so that
+# existing logins keep working across server restarts.
+SECRET_KEY_PATH = DB_DIR / "secret_key"
+
+# When True, log uploads must carry a valid endpointID + endpointSecret pair that
+# matches an endpoint registered by an admin. Turn off only for local testing.
+REQUIRE_ENDPOINT_AUTH = True
+
 
 @dataclass(frozen=True)
 class CandidatePeriodGroupConfig:
