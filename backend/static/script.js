@@ -969,8 +969,18 @@ function renderMatchedEventsTimeline(matchedEvents, windowAlert, periodMs, windo
     );
   }).join("");
 
+  let firstEventLeftPx = layout.placedEvents[0].leftPx;
+  let firstEventTimestamp = Number(layout.placedEvents[0].eventItem.timestamp);
+  for (const placed of layout.placedEvents) {
+    const timestamp = Number(placed.eventItem.timestamp);
+    if (timestamp < firstEventTimestamp) {
+      firstEventTimestamp = timestamp;
+      firstEventLeftPx = placed.leftPx;
+    }
+  }
+
   return (
-    "<div class='event-timeline-shell' data-window-index='" + windowIndex + "'>" +
+    "<div class='event-timeline-shell' data-window-index='" + windowIndex + "' data-first-event-left='" + firstEventLeftPx.toFixed(2) + "'>" +
       "<div class='event-timeline-scroll' tabindex='0' role='region' aria-label='Horizontally scrollable event timeline'>" +
         "<div class='event-timeline-canvas' style='width:" + layout.canvasWidthPx + "px;height:" + layout.canvasHeightPx + "px'>" +
           "<div class='event-timeline-track' style='width:" + (layout.canvasWidthPx - 56) + "px' aria-hidden='true'></div>" +
@@ -1098,6 +1108,12 @@ function bindWindowEventTimeline(host, windowAlert, windowIndex) {
   const timelineShell = host.querySelector(".event-timeline-shell[data-window-index='" + windowIndex + "']");
   if (!timelineShell) {
     return;
+  }
+
+  const scroll = timelineShell.querySelector(".event-timeline-scroll");
+  const firstEventLeft = Number(timelineShell.dataset.firstEventLeft);
+  if (scroll && Number.isFinite(firstEventLeft)) {
+    scroll.scrollLeft = Math.max(0, firstEventLeft - scroll.clientWidth * 0.15);
   }
 
   const inspectorHost = timelineShell.querySelector(".event-inspector-host");

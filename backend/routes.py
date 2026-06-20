@@ -29,13 +29,11 @@ from database import (
     fetch_entities,
     get_account_by_id,
     get_organization_by_id,
-    insert_events,
     list_accounts_for_organization,
     list_registered_endpoints,
     register_endpoint,
     reset_endpoint_secret,
     set_account_admin,
-    upsert_endpoint,
     verify_endpoint_secret,
 )
 from log_registry import LOG_TYPE_CONFIG, LOG_SOURCE_MAP, all_event_names
@@ -500,56 +498,45 @@ def register_routes(app):
         if log_config is None:
             return jsonify({"error": f"Unsupported logID: {log_id}."}), 400
 
-        file_size_mb = destination.stat().st_size / (1024 * 1024)
-        logger.info(
-            "Log upload saved endpoint=%s logID=%s file=%s size=%.1fMB — starting extraction",
-            endpoint_id,
-            log_id,
-            saved_name,
-            file_size_mb,
-        )
-
         try:
-            extractor = log_config["extractor"]
-            event_id_whitelist = log_config["event_id_whitelist"]
-            whitelisted_events = extractor(destination, event_id_whitelist, log_id)
-        except RuntimeError as err:
-            return jsonify({"error": str(err)}), 400
+            file_size_mb = destination.stat().st_size / (1024 * 1024)
+            logger.info(
+                "Log upload saved endpoint=%s logID=%s file=%s size=%.1fMB — queued for background ingest",
+                endpoint_id,
+                log_id,
+                saved_name,
+                file_size_mb,
+            )
+        except OSError:
+            logger.info(
+                "Log upload saved endpoint=%s logID=%s file=%s — queued for background ingest",
+                endpoint_id,
+                log_id,
+                saved_name,
+            )
 
-        inserted_result = insert_events(endpoint_id, log_id, whitelisted_events)
-        upsert_endpoint(endpoint_id, hostname, ip, int(datetime.utcnow().timestamp() * 1000))
+        from analysis_queue import IngestJob, get_analysis_queue
 
-        queue_action = None
-        if inserted_result.has_new_events:
-            from analysis_queue import get_analysis_queue
-
-            queue_action = get_analysis_queue().enqueue(endpoint_id, inserted_result.impacts)
-
-        logger.info(
-            "Log upload endpoint=%s logID=%s logType=%s inserted=%s skipped=%s "
-            "extracted=%s eventTypes=%s analysisQueued=%s queueAction=%s filename=%s",
-            endpoint_id,
-            log_id,
-            log_config["name"],
-            inserted_result.inserted_count,
-            inserted_result.skipped_count,
-            len(whitelisted_events),
-            sorted({impact.native_event_id for impact in inserted_result.impacts}),
-            inserted_result.has_new_events,
-            queue_action,
-            saved_name,
+        get_analysis_queue().enqueue_ingest(
+            IngestJob(
+                endpoint_id=endpoint_id,
+                log_id=log_id,
+                saved_path=str(destination),
+                filename=saved_name,
+                hostname=hostname,
+                ip=ip,
+            )
         )
 
         return jsonify(
             {
-                "message": "Log processed successfully.",
+                "message": "Log upload accepted; ingest and analysis will run in the background.",
+                "status": "queued",
                 "endpointID": endpoint_id,
-                "inserted": inserted_result.inserted_count,
-                "skipped": inserted_result.skipped_count,
-                "analysisQueued": inserted_result.has_new_events,
                 "logID": log_id,
                 "logType": log_config["name"],
                 "sourceName": source_name if source_name else None,
                 "filename": saved_name,
+                "analysisQueued": "pending",
             }
-        ), 201
+        ), 202

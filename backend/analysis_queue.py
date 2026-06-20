@@ -1,4 +1,4 @@
-"""Background analysis queue: coalesce per-endpoint jobs and run incremental brain passes."""
+"""Background ingest + analysis queue for async log processing."""
 
 from __future__ import annotations
 
@@ -6,14 +6,27 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 from config import INGESTION_CONFIG
 from ingestion_models import IncrementalAnalysisResult, NativeEventImpact
+from log_registry import LOG_TYPE_CONFIG
 
 logger = logging.getLogger(__name__)
 
 QueueAction = Literal["created", "merged"]
+
+
+@dataclass
+class IngestJob:
+    endpoint_id: str
+    log_id: int
+    saved_path: str
+    filename: str
+    hostname: str | None = None
+    ip: str | None = None
 
 
 @dataclass
@@ -71,9 +84,23 @@ class AnalysisQueue:
         )
         self._lock = threading.Lock()
         self._pending: dict[str, EndpointAnalysisJob] = {}
+        self._pending_ingest: list[IngestJob] = []
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def enqueue_ingest(self, job: IngestJob) -> None:
+        with self._lock:
+            self._pending_ingest.append(job)
+            pending_ingest = len(self._pending_ingest)
+        self._wake.set()
+        logger.info(
+            "Ingest queued endpoint=%s logID=%s file=%s pendingIngest=%s",
+            job.endpoint_id,
+            job.log_id,
+            job.filename,
+            pending_ingest,
+        )
 
     def enqueue(
         self,
@@ -109,11 +136,86 @@ class AnalysisQueue:
         )
         return action
 
+    def _drain_ingest(self) -> list[IngestJob]:
+        with self._lock:
+            jobs = list(self._pending_ingest)
+            self._pending_ingest.clear()
+        return jobs
+
     def _drain(self) -> list[EndpointAnalysisJob]:
         with self._lock:
             jobs = list(self._pending.values())
             self._pending.clear()
         return jobs
+
+    def _run_ingest_job(self, job: IngestJob) -> None:
+        from database import insert_events, upsert_endpoint
+
+        log_config = LOG_TYPE_CONFIG.get(job.log_id)
+        if log_config is None:
+            logger.error(
+                "Ingest failed endpoint=%s unsupported logID=%s file=%s",
+                job.endpoint_id,
+                job.log_id,
+                job.filename,
+            )
+            return
+
+        saved_path = Path(job.saved_path)
+        if not saved_path.exists():
+            logger.error(
+                "Ingest failed endpoint=%s missing file=%s",
+                job.endpoint_id,
+                job.saved_path,
+            )
+            return
+
+        started = time.monotonic()
+        file_size_mb = saved_path.stat().st_size / (1024 * 1024)
+        logger.info(
+            "Ingest started endpoint=%s logID=%s file=%s size=%.1fMB",
+            job.endpoint_id,
+            job.log_id,
+            job.filename,
+            file_size_mb,
+        )
+
+        try:
+            extractor = log_config["extractor"]
+            event_id_whitelist = log_config["event_id_whitelist"]
+            whitelisted_events = extractor(saved_path, event_id_whitelist, job.log_id)
+            inserted_result = insert_events(job.endpoint_id, job.log_id, whitelisted_events)
+            upsert_endpoint(
+                job.endpoint_id,
+                job.hostname,
+                job.ip,
+                int(datetime.now(timezone.utc).timestamp() * 1000),
+            )
+
+            analysis_action = None
+            if inserted_result.has_new_events:
+                analysis_action = self.enqueue(job.endpoint_id, inserted_result.impacts)
+
+            logger.info(
+                "Ingest finished endpoint=%s logID=%s extracted=%s inserted=%s skipped=%s "
+                "analysisQueued=%s queueAction=%s elapsed=%.2fs",
+                job.endpoint_id,
+                job.log_id,
+                len(whitelisted_events),
+                inserted_result.inserted_count,
+                inserted_result.skipped_count,
+                inserted_result.has_new_events,
+                analysis_action,
+                time.monotonic() - started,
+            )
+        except Exception:
+            logger.exception(
+                "Ingest failed endpoint=%s logID=%s file=%s elapsed=%.2fs",
+                job.endpoint_id,
+                job.log_id,
+                job.filename,
+                time.monotonic() - started,
+            )
 
     def _run_job(self, job: EndpointAnalysisJob) -> None:
         from database import incremental_recompute_alerts_for_endpoint
@@ -151,11 +253,17 @@ class AnalysisQueue:
             if self._stop.is_set():
                 break
 
+            ingest_jobs = self._drain_ingest()
+            if ingest_jobs:
+                logger.info("Background worker processing %s ingest job(s)", len(ingest_jobs))
+                for job in ingest_jobs:
+                    self._run_ingest_job(job)
+
             jobs = self._drain()
             if not jobs:
                 continue
 
-            logger.info("Analysis worker processing %s queued endpoint(s)", len(jobs))
+            logger.info("Background worker processing %s analysis job(s)", len(jobs))
             for job in jobs:
                 self._run_job(job)
 
@@ -165,12 +273,12 @@ class AnalysisQueue:
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._worker_loop,
-            name="analysis-queue-worker",
+            name="background-ingest-analysis-worker",
             daemon=True,
         )
         self._thread.start()
         logger.info(
-            "Analysis worker started (poll every %.1fs)",
+            "Background worker started (poll every %.1fs)",
             self._poll_interval_sec,
         )
 
@@ -183,8 +291,9 @@ class AnalysisQueue:
 
     def flush_sync(self) -> None:
         """Process all pending jobs on the calling thread (for tests)."""
-        jobs = self._drain()
-        for job in jobs:
+        for job in self._drain_ingest():
+            self._run_ingest_job(job)
+        for job in self._drain():
             self._run_job(job)
 
 

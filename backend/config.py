@@ -168,6 +168,14 @@ class ConfidenceScoringConfig:
 	min_evidence_density_ratio: float = 0.15
 	# When grid matching is thin, still allow publish if spacing strongly supports the period.
 	min_spacing_score_for_publish: float = 0.62
+	# Weak Fourier windows can still publish when grid matching corroborates cadence.
+	min_publish_confidence_with_grid_matches: int = 18
+	# Grid corroboration for jittery fundamentals (weak Fourier, strong event-grid fit).
+	min_grid_corroboration_matches: int = 6
+	min_grid_corroboration_spacing: float = 0.55
+	grid_corroboration_window_conf_threshold: int = 25
+	min_median_gap_fit_for_corroboration: float = 0.35
+	max_grid_corroborated_confidence: int = 62
 
 	# Logging
 	confidence_logging_enabled: bool = True
@@ -189,6 +197,10 @@ class EventMatchingConfig:
 	min_match_confidence: int = 25
 	# When median spacing disagrees slightly with Fourier period, nudge for matching.
 	period_refinement_max_ratio_delta: float = 0.2
+	# Merge / group alerts whose periods differ within this relative tolerance (e.g. 31s vs 33s).
+	period_merge_tolerance_ratio: float = 0.08
+	# Minimum matched events before observed spacing overrides the Fourier period for display.
+	min_observed_matches_for_period_override: int = 3
 
 
 EVENT_MATCHING_CONFIG = EventMatchingConfig()
@@ -209,6 +221,8 @@ class IngestionConfig:
 	analysis_poll_interval_sec: float = 3.0
 	# Set False in tests to avoid starting the background worker thread.
 	analysis_worker_enabled: bool = True
+	# How long SQLite waits on a locked database before raising OperationalError.
+	sqlite_busy_timeout_sec: float = 30.0
 
 
 INGESTION_CONFIG = IngestionConfig()

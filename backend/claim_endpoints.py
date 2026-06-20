@@ -17,9 +17,8 @@ Register a fresh endpoint from the admin page if you need the agent to upload.
 """
 
 import argparse
-import sqlite3
 
-from config import DB_PATH
+from database import connect_db
 
 
 def main() -> None:
@@ -28,7 +27,7 @@ def main() -> None:
     parser.add_argument("--endpoint", nargs="*", default=None, help="Specific endpoint IDs to claim.")
     args = parser.parse_args()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
 
     cursor.execute(

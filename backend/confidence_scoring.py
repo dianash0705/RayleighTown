@@ -595,12 +595,16 @@ def compute_evidence_sufficiency_penalty(
     ts_end_ms: int,
     matched_count: int,
     timestamps: list[float],
+    match_spacing_score: float | None = None,
 ) -> float:
     """
     Penalize alerts with too few in-window events or weak spacing support for the period.
 
     Uses raw event count in the alert window for density (not grid-matched count), so
     Fourier-detected windows are not over-penalized when phase alignment is slightly off.
+
+    When enough events match the periodic grid, raw inter-event gap scoring is skipped —
+    it rejects jittery real signals that grid matching already corroborates.
     """
     from fourier import compute_spacing_selection_score
 
@@ -625,8 +629,10 @@ def compute_evidence_sufficiency_penalty(
         severity = 1.0 - (density_ratio / scoring.min_evidence_density_ratio)
         penalty += severity * 22.0
 
-    if timestamps:
+    if timestamps and matched_count < scoring.min_matched_events_for_publish:
         spacing_score = compute_spacing_selection_score(period_ms, timestamps)
+        if match_spacing_score is not None:
+            spacing_score = max(spacing_score, match_spacing_score)
         penalty += (1.0 - spacing_score) * 18.0
         if matched_count < scoring.min_matched_events_for_publish:
             grid_shortfall = scoring.min_matched_events_for_publish - matched_count
@@ -639,6 +645,61 @@ def apply_evidence_penalty(confidence: int, penalty: float) -> int:
     return _round_confidence(max(0.0, float(confidence) - penalty))
 
 
+def apply_grid_corroboration(
+    confidence: int,
+    *,
+    window_confidence: int,
+    matched_count: int,
+    match_spacing_score: float,
+    period_ms: float,
+    timestamps: list[float],
+    matched_timestamps: list[float] | None = None,
+) -> int:
+    """
+    Raise confidence when grid matching corroborates a weak Fourier window.
+
+    Jittery real cadences often have low spectral scores but strong per-event grid
+    alignment. Long-period Fourier aliases are rejected when the period disagrees
+    with observed median spacing among matched events (not all in-window noise).
+    """
+    from fourier import compute_period_median_gap_fit
+
+    scoring = CONFIDENCE_SCORING_CONFIG
+    if matched_count < scoring.min_grid_corroboration_matches:
+        return confidence
+    if match_spacing_score < scoring.min_grid_corroboration_spacing:
+        return confidence
+    if window_confidence <= 0:
+        return confidence
+    if window_confidence >= scoring.grid_corroboration_window_conf_threshold:
+        return confidence
+    if not math.isfinite(period_ms) or period_ms <= 0:
+        return confidence
+
+    spacing_timestamps = (
+        matched_timestamps
+        if matched_timestamps and len(matched_timestamps) >= 2
+        else timestamps
+    )
+    median_gap_fit = (
+        compute_period_median_gap_fit(period_ms, spacing_timestamps)
+        if spacing_timestamps
+        else 0.0
+    )
+    if median_gap_fit < scoring.min_median_gap_fit_for_corroboration:
+        return confidence
+
+    grid_confidence = _round_confidence(match_spacing_score * 100)
+    count_factor = min(1.0, matched_count / 12.0)
+    corroborated = _round_confidence(
+        0.15 * window_confidence
+        + 0.45 * grid_confidence
+        + min(12.0, matched_count) * (0.45 + 0.15 * count_factor)
+    )
+    corroborated = min(corroborated, scoring.max_grid_corroborated_confidence)
+    return max(confidence, corroborated)
+
+
 def should_publish_alert(
     confidence: int,
     *,
@@ -649,7 +710,13 @@ def should_publish_alert(
     scoring = CONFIDENCE_SCORING_CONFIG
     if events_in_window < scoring.min_matched_events_for_publish:
         return False
-    if confidence < scoring.min_publish_confidence:
+    min_confidence = scoring.min_publish_confidence
+    if matched_count >= scoring.min_matched_events_for_publish:
+        min_confidence = min(
+            min_confidence,
+            scoring.min_publish_confidence_with_grid_matches,
+        )
+    if confidence < min_confidence:
         return False
     if matched_count >= scoring.min_matched_events_for_publish:
         return True

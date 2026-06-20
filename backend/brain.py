@@ -26,11 +26,12 @@ from fourier import (
 )
 from config import CONFIDENCE_SCORING_CONFIG, HARMONIC_ANALYSIS_CONFIG
 from confidence_log import log_confidence_event
-from event_matching import MatchedEvent, match_events_to_alert
+from event_matching import MatchedEvent, match_events_to_alert, periods_near_match, compute_match_spacing_score
 from confidence_scoring import (
     ConfidenceBreakdown,
     WindowSnapshot,
     apply_evidence_penalty,
+    apply_grid_corroboration,
     build_window_snapshot,
     compute_evidence_sufficiency_penalty,
     compute_group_confidence,
@@ -227,12 +228,79 @@ def _ranges_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
     return start_a <= end_b and start_b <= end_a
 
 
-def _periods_match(period_a: float, period_b: float, tolerance_ratio: float = 0.05) -> bool:
-    if math.isnan(period_a) or math.isnan(period_b):
-        return False
+def _is_window_subsumed(inner: AlertRecord, outer: AlertRecord) -> bool:
+    return (
+        inner.ts_begin >= outer.ts_begin
+        and inner.ts_end <= outer.ts_end
+        and inner.confidence <= outer.confidence
+        and periods_near_match(inner.period_ts, outer.period_ts)
+    )
 
-    scale = max(1.0, abs(period_a), abs(period_b))
-    return abs(period_a - period_b) <= (scale * tolerance_ratio)
+
+def _merge_matched_events(
+    left: tuple[MatchedEvent, ...],
+    right: tuple[MatchedEvent, ...],
+) -> tuple[MatchedEvent, ...]:
+    by_id: dict[int, MatchedEvent] = {
+        item.internal_event_id: item for item in left
+    }
+    for item in right:
+        existing = by_id.get(item.internal_event_id)
+        if existing is None or item.confidence > existing.confidence:
+            by_id[item.internal_event_id] = item
+    return tuple(
+        sorted(by_id.values(), key=lambda matched: (matched.timestamp_ms, matched.internal_event_id))
+    )
+
+
+def _merge_alert_records(left: AlertRecord, right: AlertRecord) -> AlertRecord:
+    primary = left if left.confidence >= right.confidence else right
+    return AlertRecord(
+        endpoint_id=primary.endpoint_id,
+        native_event_id=primary.native_event_id,
+        matched_events=_merge_matched_events(left.matched_events, right.matched_events),
+        ts_begin=min(left.ts_begin, right.ts_begin),
+        ts_end=max(left.ts_end, right.ts_end),
+        period_ts=primary.period_ts,
+        confidence=max(left.confidence, right.confidence),
+        phase=primary.phase,
+    )
+
+
+def _merge_overlapping_alert_records(records: list[AlertRecord]) -> list[AlertRecord]:
+    if len(records) < 2:
+        return records
+
+    merged: list[AlertRecord] = []
+    for candidate in sorted(records, key=lambda item: (-item.confidence, item.ts_begin, item.ts_end)):
+        absorbed = False
+        for index, existing in enumerate(merged):
+            if not periods_near_match(existing.period_ts, candidate.period_ts):
+                continue
+            if not _ranges_overlap(
+                existing.ts_begin,
+                existing.ts_end,
+                candidate.ts_begin,
+                candidate.ts_end,
+            ):
+                continue
+            if _is_window_subsumed(candidate, existing):
+                absorbed = True
+                break
+            if _is_window_subsumed(existing, candidate):
+                merged[index] = candidate
+                absorbed = True
+                break
+            merged[index] = _merge_alert_records(existing, candidate)
+            absorbed = True
+            break
+        if not absorbed:
+            merged.append(candidate)
+    return merged
+
+
+def _periods_match(period_a: float, period_b: float, tolerance_ratio: float = 0.05) -> bool:
+    return periods_near_match(period_a, period_b, tolerance_ratio)
 
 
 def _dedupe_window_snapshots(snapshots: list[WindowSnapshot]) -> list[WindowSnapshot]:
@@ -661,41 +729,57 @@ def _finalize_alert_record_from_core(
     alert_core: AlertCore,
     candidate_events: list[tuple[int, int]],
 ) -> AlertRecord | None:
-    matched_events = match_events_to_alert(
+    match_result = match_events_to_alert(
         candidate_events,
         ts_begin_ms=alert_core.ts_begin,
         ts_end_ms=alert_core.ts_end,
         period_ms=alert_core.period_ts,
         phase_rad=alert_core.phase,
     )
+    matched_events = match_result.matched_events
+    display_period_ms = match_result.observed_period_ms
+    display_phase_rad = match_result.observed_phase_rad
     window_timestamps = [
         float(timestamp_ms)
         for _, timestamp_ms in candidate_events
         if alert_core.ts_begin <= timestamp_ms <= alert_core.ts_end
     ]
     spacing_score = (
-        compute_spacing_selection_score(alert_core.period_ts, window_timestamps)
+        compute_spacing_selection_score(display_period_ms, window_timestamps)
         if window_timestamps
         else 0.0
     )
+    match_spacing_score = compute_match_spacing_score(matched_events)
+    matched_timestamps = [float(event.timestamp_ms) for event in matched_events]
+    effective_spacing_score = max(spacing_score, match_spacing_score)
     evidence_penalty = compute_evidence_sufficiency_penalty(
-        period_ms=alert_core.period_ts,
+        period_ms=display_period_ms,
         ts_begin_ms=alert_core.ts_begin,
         ts_end_ms=alert_core.ts_end,
         matched_count=len(matched_events),
         timestamps=window_timestamps,
+        match_spacing_score=match_spacing_score,
     )
     final_confidence = apply_evidence_penalty(alert_core.confidence, evidence_penalty)
+    final_confidence = apply_grid_corroboration(
+        final_confidence,
+        window_confidence=alert_core.confidence,
+        matched_count=len(matched_events),
+        match_spacing_score=match_spacing_score,
+        period_ms=display_period_ms,
+        timestamps=window_timestamps,
+        matched_timestamps=matched_timestamps,
+    )
     if not should_publish_alert(
         final_confidence,
         events_in_window=len(window_timestamps),
         matched_count=len(matched_events),
-        spacing_score=spacing_score,
+        spacing_score=effective_spacing_score,
     ):
         logger.info(
             "Alert suppressed endpoint=%s nativeEventID=%s periodMs=%.0f "
             "windowConf=%s finalConf=%s eventsInWindow=%s matched=%s "
-            "spacingScore=%.2f evidencePenalty=%.1f",
+            "spacingScore=%.2f matchSpacingScore=%.2f evidencePenalty=%.1f",
             endpoint_id,
             native_event_id,
             alert_core.period_ts,
@@ -704,6 +788,7 @@ def _finalize_alert_record_from_core(
             len(window_timestamps),
             len(matched_events),
             spacing_score,
+            match_spacing_score,
             evidence_penalty,
         )
         return None
@@ -714,9 +799,9 @@ def _finalize_alert_record_from_core(
         matched_events=matched_events,
         ts_begin=alert_core.ts_begin,
         ts_end=alert_core.ts_end,
-        period_ts=alert_core.period_ts,
+        period_ts=display_period_ms,
         confidence=final_confidence,
-        phase=alert_core.phase,
+        phase=display_phase_rad,
     )
 
 
@@ -769,7 +854,7 @@ def _alert_cores_to_alert_records(
         seen_alert_keys.add(alert_key)
         alerts.append(alert_record)
 
-    return alerts
+    return _merge_overlapping_alert_records(alerts)
 
 
 def build_alerts_for_native_event_incremental(
@@ -844,7 +929,7 @@ def build_alerts_for_native_event_incremental(
                 seen_alert_keys,
             )
         )
-    return alerts
+    return _merge_overlapping_alert_records(alerts)
 
 
 def build_alerts_for_endpoint_incremental(
@@ -926,6 +1011,7 @@ def build_alerts_for_endpoint(
         if not alert_cores:
             continue
 
+        native_alerts: list[AlertRecord] = []
         for alert_core in alert_cores:
             if CONFIDENCE_SCORING_CONFIG.confidence_logging_enabled and alert_core.confidence_breakdown:
                 log_confidence_event(
@@ -964,7 +1050,9 @@ def build_alerts_for_endpoint(
             if alert_key in seen_alert_keys:
                 continue
             seen_alert_keys.add(alert_key)
-            alerts.append(alert_record)
+            native_alerts.append(alert_record)
+
+        alerts.extend(_merge_overlapping_alert_records(native_alerts))
 
     return alerts
 

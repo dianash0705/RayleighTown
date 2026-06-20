@@ -276,3 +276,149 @@ class TestEvidenceSufficiency:
             matched_count=8,
             spacing_score=0.95,
         )
+
+    def test_jittery_long_period_with_grid_matches_skips_spacing_penalty(self):
+        from confidence_scoring import (
+            apply_evidence_penalty,
+            compute_evidence_sufficiency_penalty,
+            should_publish_alert,
+        )
+
+        period_ms = 48_500.0
+        timestamps = [
+            float(index * period_ms + ((index % 5) - 2) * period_ms * 0.2)
+            for index in range(168)
+        ]
+        penalty = compute_evidence_sufficiency_penalty(
+            period_ms=period_ms,
+            ts_begin_ms=int(timestamps[0]),
+            ts_end_ms=int(timestamps[-1]),
+            matched_count=12,
+            timestamps=timestamps,
+            match_spacing_score=0.35,
+        )
+        final_confidence = apply_evidence_penalty(21, penalty)
+
+        assert penalty < 5.0
+        assert final_confidence == 21
+        assert should_publish_alert(
+            final_confidence,
+            events_in_window=len(timestamps),
+            matched_count=12,
+            spacing_score=0.0,
+        )
+
+    def test_sparse_window_still_penalized_without_grid_matches(self):
+        from confidence_scoring import compute_evidence_sufficiency_penalty
+
+        penalty = compute_evidence_sufficiency_penalty(
+            period_ms=48_500.0,
+            ts_begin_ms=0,
+            ts_end_ms=600_000,
+            matched_count=2,
+            timestamps=[0.0, 600_000.0],
+            match_spacing_score=0.0,
+        )
+
+        assert penalty >= 18.0
+
+
+@pytest.mark.unit
+class TestGridCorroboration:
+    def test_jittery_fundamental_with_strong_grid_match_is_corroborated(self):
+        from confidence_scoring import apply_grid_corroboration, should_publish_alert
+
+        period_ms = 48_500.0
+        timestamps = [
+            float(index * period_ms + ((index % 5) - 2) * period_ms * 0.2)
+            for index in range(168)
+        ]
+        corroborated = apply_grid_corroboration(
+            3,
+            window_confidence=3,
+            matched_count=17,
+            match_spacing_score=0.86,
+            period_ms=period_ms,
+            timestamps=timestamps,
+        )
+
+        assert 35 <= corroborated <= 55
+        assert should_publish_alert(
+            corroborated,
+            events_in_window=len(timestamps),
+            matched_count=17,
+            spacing_score=0.0,
+        )
+
+    def test_long_period_alias_is_not_corroborated_without_spacing_support(self):
+        from confidence_scoring import apply_grid_corroboration
+
+        period_ms = 1_380_000.0
+        short_period_ms = 48_500.0
+        timestamps = [
+            float(index * short_period_ms + ((index % 5) - 2) * short_period_ms * 0.2)
+            for index in range(200)
+        ]
+        corroborated = apply_grid_corroboration(
+            13,
+            window_confidence=13,
+            matched_count=55,
+            match_spacing_score=0.86,
+            period_ms=period_ms,
+            timestamps=timestamps,
+            matched_timestamps=timestamps,
+        )
+
+        assert corroborated == 13
+
+    def test_corroboration_ignores_non_periodic_noise_in_window(self):
+        from confidence_scoring import apply_grid_corroboration, should_publish_alert
+
+        period_ms = 48_500.0
+        matched_timestamps = [
+            float(index * period_ms + ((index % 5) - 2) * period_ms * 0.2)
+            for index in range(20)
+        ]
+        noisy_window = sorted(set(matched_timestamps + [float(i * 5_000) for i in range(220)]))
+        corroborated = apply_grid_corroboration(
+            9,
+            window_confidence=9,
+            matched_count=17,
+            match_spacing_score=0.86,
+            period_ms=period_ms,
+            timestamps=noisy_window,
+            matched_timestamps=matched_timestamps,
+        )
+
+        assert 35 <= corroborated <= 55
+        assert should_publish_alert(
+            corroborated,
+            events_in_window=len(noisy_window),
+            matched_count=17,
+            spacing_score=0.0,
+        )
+
+        without_matched_spacing = apply_grid_corroboration(
+            9,
+            window_confidence=9,
+            matched_count=17,
+            match_spacing_score=0.86,
+            period_ms=period_ms,
+            timestamps=noisy_window,
+        )
+        assert without_matched_spacing == 9
+
+    def test_strong_fourier_window_is_not_overridden(self):
+        from confidence_scoring import apply_grid_corroboration
+
+        timestamps = [float(index * 30_000) for index in range(12)]
+        corroborated = apply_grid_corroboration(
+            95,
+            window_confidence=95,
+            matched_count=12,
+            match_spacing_score=0.92,
+            period_ms=30_000.0,
+            timestamps=timestamps,
+        )
+
+        assert corroborated == 95

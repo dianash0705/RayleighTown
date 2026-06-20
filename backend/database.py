@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 
 from alert_filters import AlertQueryFilters, apply_filter_rules
@@ -16,10 +17,17 @@ from brain import (
     run_brain_for_endpoint,
 )
 from config import DB_PATH, INGESTION_CONFIG, PHASE_GHOST_SUPPRESSION_ENABLED, PHASE_GHOST_SUPPRESSION_SIMILARITY_THRESHOLD
-from event_matching import MatchedEvent
+from event_matching import MatchedEvent, periods_near_match
 from event_parsers.common import extract_endpoint_agent_metadata
 from ingestion_models import InsertEventsResult, IncrementalAnalysisResult, NativeEventImpact
 from log_registry import resolve_event_name, resolve_log_source_name
+
+_DB_WRITE_LOCK = threading.Lock()
+
+
+def connect_db() -> sqlite3.Connection:
+    """Open SQLite with a busy timeout so concurrent readers/writers can retry."""
+    return sqlite3.connect(DB_PATH, timeout=INGESTION_CONFIG.sqlite_busy_timeout_sec)
 
 
 def _table_columns(cursor, table_name: str) -> set[str]:
@@ -92,7 +100,8 @@ def _compute_overview_time_span(
 
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
+    conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -205,6 +214,13 @@ def init_db():
     _ensure_column(cursor=conn.cursor(), table_name="logs", column_definition="rawPayload TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(cursor=conn.cursor(), table_name="logs", column_definition="parsedDetails TEXT NOT NULL DEFAULT '{}'")
     conn.commit()
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_endpoint_log_event_ts
+        ON logs(endpointID, logID, nativeEventID, timestamp)
+        """
+    )
+    conn.commit()
     conn.close()
 
 
@@ -225,7 +241,7 @@ def _serialize_account_row(row) -> dict:
 
 
 def get_organization_by_id(organization_id: int) -> dict | None:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT organizationID, name, createdAt FROM organizations WHERE organizationID = ?",
@@ -239,7 +255,7 @@ def get_organization_by_id(organization_id: int) -> dict | None:
 
 
 def get_organization_by_name(name: str) -> dict | None:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT organizationID, name, createdAt FROM organizations WHERE name = ? COLLATE NOCASE",
@@ -253,7 +269,7 @@ def get_organization_by_name(name: str) -> dict | None:
 
 
 def get_account_by_id(account_id: int) -> dict | None:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -271,7 +287,7 @@ def get_account_by_id(account_id: int) -> dict | None:
 
 def authenticate_account(organization_name: str, account_name: str, password: str) -> dict | None:
     """Return the account dict when the org/username/password triple is valid."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -306,7 +322,7 @@ def create_organization_with_admin(organization_name: str, admin_name: str, admi
     if not admin_password:
         raise ValueError("Admin password is required.")
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     now_ms = _now_ms()
     # Case-insensitive uniqueness check (the column's UNIQUE constraint is case-sensitive).
@@ -340,7 +356,7 @@ def create_organization_with_admin(organization_name: str, admin_name: str, admi
 
 
 def list_accounts_for_organization(organization_id: int) -> list[dict]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -369,7 +385,7 @@ def create_account(
     if not password:
         raise ValueError("Password is required.")
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     try:
         cursor.execute(
@@ -396,7 +412,7 @@ def create_account(
 
 
 def delete_account(organization_id: int, account_id: int) -> bool:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         "DELETE FROM accounts WHERE accountID = ? AND organizationID = ?",
@@ -409,7 +425,7 @@ def delete_account(organization_id: int, account_id: int) -> bool:
 
 
 def set_account_admin(organization_id: int, account_id: int, is_admin: bool) -> bool:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -433,7 +449,7 @@ def register_endpoint(organization_id: int, display_name: str | None) -> dict:
     display_name = (display_name or "").strip() or None
     secret = generate_endpoint_secret()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     now_ms = _now_ms()
     # Retry a few times in the (astronomically unlikely) event of an id collision.
@@ -469,7 +485,7 @@ def get_endpoint_secret(organization_id: int, endpoint_id: str) -> dict | None:
     The returned ``secret`` may itself be None for endpoints registered before
     secrets were stored; those must be reset to obtain a viewable secret.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT secret FROM endpoints WHERE endpointID = ? AND organizationID = ?",
@@ -488,7 +504,7 @@ def reset_endpoint_secret(organization_id: int, endpoint_id: str) -> dict | None
     Returns the new secret, or None if the endpoint does not belong to the org.
     """
     secret = generate_endpoint_secret()
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         "UPDATE endpoints SET secret = ?, secretHash = ? WHERE endpointID = ? AND organizationID = ?",
@@ -503,7 +519,7 @@ def reset_endpoint_secret(organization_id: int, endpoint_id: str) -> dict | None
 
 
 def list_registered_endpoints(organization_id: int) -> list[dict]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -535,7 +551,7 @@ def list_registered_endpoints(organization_id: int) -> list[dict]:
 
 
 def delete_endpoint(organization_id: int, endpoint_id: str) -> bool:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         "DELETE FROM endpoints WHERE endpointID = ? AND organizationID = ?",
@@ -548,7 +564,7 @@ def delete_endpoint(organization_id: int, endpoint_id: str) -> bool:
 
 
 def get_endpoint_organization(endpoint_id: str) -> int | None:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute("SELECT organizationID FROM endpoints WHERE endpointID = ?", (endpoint_id,))
     row = cursor.fetchone()
@@ -560,7 +576,7 @@ def get_endpoint_organization(endpoint_id: str) -> int | None:
 
 def verify_endpoint_secret(endpoint_id: str, secret: str) -> bool:
     """Return True when the endpoint exists, is registered, and the secret matches."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute("SELECT secretHash FROM endpoints WHERE endpointID = ?", (endpoint_id,))
     row = cursor.fetchone()
@@ -571,7 +587,7 @@ def verify_endpoint_secret(endpoint_id: str, secret: str) -> bool:
 
 
 def upsert_endpoint(endpoint_id: str, hostname: str | None, ip: str | None, last_seen_at: int) -> None:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -589,7 +605,7 @@ def upsert_endpoint(endpoint_id: str, hostname: str | None, ip: str | None, last
 
 
 def get_max_log_timestamp(endpoint_id: str, log_id: int) -> int | None:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -626,104 +642,134 @@ def _log_event_exists(
 
 
 def insert_events(endpoint_id: str, log_id: int, events) -> InsertEventsResult:
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    with _DB_WRITE_LOCK:
+        conn = connect_db()
+        cursor = conn.cursor()
 
-    cursor.execute(
-        "SELECT MAX(internalEventID) FROM logs WHERE endpointID = ?",
-        (endpoint_id,),
-    )
-    max_id_row = cursor.fetchone()
-    next_internal_event_id = 0 if max_id_row[0] is None else max_id_row[0] + 1
-
-    watermark = get_max_log_timestamp(endpoint_id, log_id)
-    overlap_buffer_ms = INGESTION_CONFIG.overlap_buffer_ms
-    cutoff_ms = watermark - overlap_buffer_ms if watermark is not None else None
-
-    latest_timestamp = 0
-    endpoint_hostname = None
-    endpoint_ip = None
-    skipped_count = 0
-    impact_bounds: dict[int, dict[str, int]] = {}
-    inserted_count = 0
-
-    for event in events:
-        timestamp_ms = event["timestamp_ms"]
-        native_event_id = event["native_event_id"]
-        if not isinstance(timestamp_ms, int):
-            conn.close()
-            raise TypeError("timestamp_ms must be int")
-
-        if cutoff_ms is not None and timestamp_ms < cutoff_ms:
-            skipped_count += 1
-            continue
-
-        if _log_event_exists(cursor, endpoint_id, log_id, native_event_id, timestamp_ms):
-            skipped_count += 1
-            continue
-
-        raw_payload = event.get("raw_payload") or {}
-        parsed_details = event.get("parsed_details") or {}
-        agent_hostname, agent_ip = extract_endpoint_agent_metadata(raw_payload)
-        hostname = event.get("hostname") or agent_hostname
-        ip = event.get("ip") or agent_ip
-
-        if hostname and not endpoint_hostname:
-            endpoint_hostname = hostname
-        if ip:
-            endpoint_ip = ip
-        latest_timestamp = max(latest_timestamp, timestamp_ms)
+        cursor.execute(
+            "SELECT MAX(internalEventID) FROM logs WHERE endpointID = ?",
+            (endpoint_id,),
+        )
+        max_id_row = cursor.fetchone()
+        next_internal_event_id = 0 if max_id_row[0] is None else max_id_row[0] + 1
 
         cursor.execute(
             """
-            INSERT INTO logs (
-                endpointID,
-                internalEventID,
-                timestamp,
-                logID,
-                nativeEventID,
-                internalEventType,
-                rawPayload,
-                parsedDetails
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            SELECT MAX(timestamp)
+            FROM logs
+            WHERE endpointID = ? AND logID = ?
             """,
-            (
-                endpoint_id,
-                next_internal_event_id,
-                timestamp_ms,
-                log_id,
+            (endpoint_id, log_id),
+        )
+        watermark_row = cursor.fetchone()
+        watermark = None if watermark_row is None or watermark_row[0] is None else int(watermark_row[0])
+        overlap_buffer_ms = INGESTION_CONFIG.overlap_buffer_ms
+        cutoff_ms = watermark - overlap_buffer_ms if watermark is not None else None
+
+        existing_keys: set[tuple[int, int]] = set()
+        if cutoff_ms is not None:
+            cursor.execute(
+                """
+                SELECT nativeEventID, timestamp
+                FROM logs
+                WHERE endpointID = ? AND logID = ? AND timestamp >= ?
+                """,
+                (endpoint_id, log_id, cutoff_ms),
+            )
+            existing_keys = {(int(row[0]), int(row[1])) for row in cursor.fetchall()}
+
+        latest_timestamp = 0
+        endpoint_hostname = None
+        endpoint_ip = None
+        skipped_count = 0
+        impact_bounds: dict[int, dict[str, int]] = {}
+        rows_to_insert: list[tuple] = []
+
+        for event in events:
+            timestamp_ms = event["timestamp_ms"]
+            native_event_id = event["native_event_id"]
+            if not isinstance(timestamp_ms, int):
+                conn.close()
+                raise TypeError("timestamp_ms must be int")
+
+            if cutoff_ms is not None and timestamp_ms < cutoff_ms:
+                skipped_count += 1
+                continue
+
+            dedupe_key = (native_event_id, timestamp_ms)
+            if dedupe_key in existing_keys:
+                skipped_count += 1
+                continue
+            existing_keys.add(dedupe_key)
+
+            raw_payload = event.get("raw_payload") or {}
+            parsed_details = event.get("parsed_details") or {}
+            agent_hostname, agent_ip = extract_endpoint_agent_metadata(raw_payload)
+            hostname = event.get("hostname") or agent_hostname
+            ip = event.get("ip") or agent_ip
+
+            if hostname and not endpoint_hostname:
+                endpoint_hostname = hostname
+            if ip:
+                endpoint_ip = ip
+            latest_timestamp = max(latest_timestamp, timestamp_ms)
+
+            rows_to_insert.append(
+                (
+                    endpoint_id,
+                    next_internal_event_id,
+                    timestamp_ms,
+                    log_id,
+                    native_event_id,
+                    native_event_id,
+                    json.dumps(raw_payload),
+                    json.dumps(parsed_details),
+                )
+            )
+            next_internal_event_id += 1
+
+            bounds = impact_bounds.setdefault(
                 native_event_id,
-                native_event_id,
-                json.dumps(raw_payload),
-                json.dumps(parsed_details),
-            ),
-        )
-        next_internal_event_id += 1
-        inserted_count += 1
+                {"min": timestamp_ms, "max": timestamp_ms, "count": 0},
+            )
+            bounds["min"] = min(bounds["min"], timestamp_ms)
+            bounds["max"] = max(bounds["max"], timestamp_ms)
+            bounds["count"] += 1
 
-        bounds = impact_bounds.setdefault(
-            native_event_id,
-            {"min": timestamp_ms, "max": timestamp_ms, "count": 0},
-        )
-        bounds["min"] = min(bounds["min"], timestamp_ms)
-        bounds["max"] = max(bounds["max"], timestamp_ms)
-        bounds["count"] += 1
+        if rows_to_insert:
+            cursor.executemany(
+                """
+                INSERT INTO logs (
+                    endpointID,
+                    internalEventID,
+                    timestamp,
+                    logID,
+                    nativeEventID,
+                    internalEventType,
+                    rawPayload,
+                    parsedDetails
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows_to_insert,
+            )
 
-    if latest_timestamp:
-        cursor.execute(
-            """
-            INSERT INTO endpoints (endpointID, hostname, ip, lastSeenAt)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(endpointID) DO UPDATE SET
-                hostname = COALESCE(excluded.hostname, endpoints.hostname),
-                ip = COALESCE(excluded.ip, endpoints.ip),
-                lastSeenAt = MAX(endpoints.lastSeenAt, excluded.lastSeenAt)
-            """,
-            (endpoint_id, endpoint_hostname, endpoint_ip, latest_timestamp),
-        )
+        inserted_count = len(rows_to_insert)
 
-    conn.commit()
-    conn.close()
+        if latest_timestamp:
+            cursor.execute(
+                """
+                INSERT INTO endpoints (endpointID, hostname, ip, lastSeenAt)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(endpointID) DO UPDATE SET
+                    hostname = COALESCE(excluded.hostname, endpoints.hostname),
+                    ip = COALESCE(excluded.ip, endpoints.ip),
+                    lastSeenAt = MAX(endpoints.lastSeenAt, excluded.lastSeenAt)
+                """,
+                (endpoint_id, endpoint_hostname, endpoint_ip, latest_timestamp),
+            )
+
+        conn.commit()
+        conn.close()
 
     impacts = [
         NativeEventImpact(
@@ -742,7 +788,7 @@ def insert_events(endpoint_id: str, log_id: int, events) -> InsertEventsResult:
 
 
 def fetch_events_for_endpoint(endpoint_id: str) -> list[EventRecord]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -801,7 +847,7 @@ def fetch_preserved_alert_records(
     impact_max_ms: int,
 ) -> list[AlertRecord]:
     """Return existing window alerts that do not overlap the new-event impact range."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -875,7 +921,7 @@ def _group_raw_alert_rows(raw_alert_rows: list[dict]) -> list[dict]:
                 continue
             if group["native_event_id"] != raw_alert_row["native_event_id"]:
                 continue
-            if group["period_ts"] != raw_alert_row["period_ts"]:
+            if not periods_near_match(group["period_ts"], raw_alert_row["period_ts"]):
                 continue
 
             if PHASE_GHOST_SUPPRESSION_ENABLED:
@@ -909,6 +955,10 @@ def _group_raw_alert_rows(raw_alert_rows: list[dict]) -> list[dict]:
         else:
             group["ts_begin"] = min(group["ts_begin"], raw_alert_row["ts_begin"])
             group["ts_end"] = max(group["ts_end"], raw_alert_row["ts_end"])
+            if raw_alert_row["confidence"] >= group["confidence"]:
+                group["period_ts"] = raw_alert_row["period_ts"]
+                if raw_alert_row["phase"] is not None:
+                    group["phase"] = raw_alert_row["phase"]
             group["confidence"] = max(group["confidence"], raw_alert_row["confidence"])
             if group["log_id"] is None and raw_alert_row["log_id"] is not None:
                 group["log_id"] = raw_alert_row["log_id"]
@@ -1034,62 +1084,63 @@ def replace_alerts_for_native_event_types(
     if not affected_native_event_ids:
         return 0
 
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    with _DB_WRITE_LOCK:
+        conn = connect_db()
+        cursor = conn.cursor()
 
-    placeholders = ",".join("?" for _ in affected_native_event_ids)
-    params = (endpoint_id, *sorted(affected_native_event_ids))
+        placeholders = ",".join("?" for _ in affected_native_event_ids)
+        params = (endpoint_id, *sorted(affected_native_event_ids))
 
-    cursor.execute(
-        f"""
-        DELETE FROM eventAlertMap
-        WHERE alertID IN (
-            SELECT alertID FROM alerts
-            WHERE endpointID = ? AND nativeEventID IN ({placeholders})
+        cursor.execute(
+            f"""
+            DELETE FROM eventAlertMap
+            WHERE alertID IN (
+                SELECT alertID FROM alerts
+                WHERE endpointID = ? AND nativeEventID IN ({placeholders})
+            )
+            """,
+            params,
         )
-        """,
-        params,
-    )
-    cursor.execute(
-        f"DELETE FROM alerts WHERE endpointID = ? AND nativeEventID IN ({placeholders})",
-        params,
-    )
+        cursor.execute(
+            f"DELETE FROM alerts WHERE endpointID = ? AND nativeEventID IN ({placeholders})",
+            params,
+        )
 
-    _delete_alert_groups_for_endpoint(cursor, endpoint_id)
+        _delete_alert_groups_for_endpoint(cursor, endpoint_id)
 
-    _insert_alert_records(cursor, alerts)
+        _insert_alert_records(cursor, alerts)
 
-    cursor.execute(
-        """
-        SELECT alertID, endpointID, nativeEventID, logID, tsBegin, tsEnd, periodTs, confidence, phase
-        FROM alerts
-        WHERE endpointID = ?
-        ORDER BY nativeEventID ASC, tsBegin ASC, tsEnd ASC, alertID ASC
-        """,
-        (endpoint_id,),
-    )
-    all_rows = cursor.fetchall()
-    all_raw_rows = [
-        {
-            "alert_id": row[0],
-            "endpoint_id": row[1],
-            "native_event_id": row[2],
-            "log_id": row[3],
-            "ts_begin": row[4],
-            "ts_end": row[5],
-            "period_ts": row[6],
-            "confidence": row[7],
-            "phase": row[8],
-        }
-        for row in all_rows
-    ]
+        cursor.execute(
+            """
+            SELECT alertID, endpointID, nativeEventID, logID, tsBegin, tsEnd, periodTs, confidence, phase
+            FROM alerts
+            WHERE endpointID = ?
+            ORDER BY nativeEventID ASC, tsBegin ASC, tsEnd ASC, alertID ASC
+            """,
+            (endpoint_id,),
+        )
+        all_rows = cursor.fetchall()
+        all_raw_rows = [
+            {
+                "alert_id": row[0],
+                "endpoint_id": row[1],
+                "native_event_id": row[2],
+                "log_id": row[3],
+                "ts_begin": row[4],
+                "ts_end": row[5],
+                "period_ts": row[6],
+                "confidence": row[7],
+                "phase": row[8],
+            }
+            for row in all_rows
+        ]
 
-    grouped_alerts = _group_raw_alert_rows(all_raw_rows)
-    _insert_alert_groups(cursor, grouped_alerts)
+        grouped_alerts = _group_raw_alert_rows(all_raw_rows)
+        _insert_alert_groups(cursor, grouped_alerts)
 
-    conn.commit()
-    conn.close()
-    return len(grouped_alerts)
+        conn.commit()
+        conn.close()
+        return len(grouped_alerts)
 
 
 def incremental_recompute_alerts_for_endpoint(
@@ -1165,27 +1216,28 @@ def incremental_recompute_alerts_for_endpoint(
 
 
 def replace_alerts_for_endpoint(endpoint_id: str, alerts) -> int:
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    with _DB_WRITE_LOCK:
+        conn = connect_db()
+        cursor = conn.cursor()
 
-    cursor.execute(
-        "DELETE FROM alertGroupMap WHERE alertGroupID IN (SELECT alertGroupID FROM alertGroups WHERE endpointID = ?)",
-        (endpoint_id,),
-    )
-    cursor.execute("DELETE FROM alertGroups WHERE endpointID = ?", (endpoint_id,))
-    cursor.execute(
-        "DELETE FROM eventAlertMap WHERE alertID IN (SELECT alertID FROM alerts WHERE endpointID = ?)",
-        (endpoint_id,),
-    )
-    cursor.execute("DELETE FROM alerts WHERE endpointID = ?", (endpoint_id,))
+        cursor.execute(
+            "DELETE FROM alertGroupMap WHERE alertGroupID IN (SELECT alertGroupID FROM alertGroups WHERE endpointID = ?)",
+            (endpoint_id,),
+        )
+        cursor.execute("DELETE FROM alertGroups WHERE endpointID = ?", (endpoint_id,))
+        cursor.execute(
+            "DELETE FROM eventAlertMap WHERE alertID IN (SELECT alertID FROM alerts WHERE endpointID = ?)",
+            (endpoint_id,),
+        )
+        cursor.execute("DELETE FROM alerts WHERE endpointID = ?", (endpoint_id,))
 
-    raw_alert_rows = _insert_alert_records(cursor, alerts)
-    grouped_alerts = _group_raw_alert_rows(raw_alert_rows)
-    _insert_alert_groups(cursor, grouped_alerts)
+        raw_alert_rows = _insert_alert_records(cursor, alerts)
+        grouped_alerts = _group_raw_alert_rows(raw_alert_rows)
+        _insert_alert_groups(cursor, grouped_alerts)
 
-    conn.commit()
-    conn.close()
-    return len(grouped_alerts)
+        conn.commit()
+        conn.close()
+        return len(grouped_alerts)
 
 
 def recompute_alerts_for_endpoint(
@@ -1230,7 +1282,7 @@ def _serialize_alert_group_row(row, windows):
 
 
 def fetch_alerts(filters: AlertQueryFilters):
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
 
     where_clauses, params = apply_filter_rules(filters)
@@ -1321,7 +1373,7 @@ def _org_filter_sql(column: str, organization_id: int | None) -> tuple[str, list
 
 
 def fetch_alert_detail(alert_group_id: int, organization_id: int | None = None):
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     org_clause, org_params = _org_filter_sql("g.endpointID", organization_id)
     cursor.execute(
@@ -1518,7 +1570,7 @@ def _timeline_buckets(window_start_ms: int, window_end_ms: int) -> list[dict]:
                 {
                     "bucketStart": int(bucket_start.timestamp() * 1000),
                     "bucketEnd": int(bucket_end_dt.timestamp() * 1000),
-                    "label": bucket_start.strftime("%a %m/%d"),
+                    "label": bucket_start.strftime("%d/%m"),
                 }
             )
             bucket_start += timedelta(days=1)
@@ -1548,7 +1600,7 @@ def fetch_entities(
     now = datetime.now(timezone.utc)
     now_ms = int(now.timestamp() * 1000)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     effective_start_ms, effective_end_ms = _effective_query_window(cursor, window_start_ms, window_end_ms, now_ms)
 
@@ -1653,7 +1705,7 @@ def fetch_dashboard_stats(
     now_ms = int(now.timestamp() * 1000)
     last_24h_start_ms = int((now - timedelta(hours=24)).timestamp() * 1000)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     cursor = conn.cursor()
     effective_start_ms, effective_end_ms = _effective_query_window(cursor, window_start_ms, window_end_ms, now_ms)
 
