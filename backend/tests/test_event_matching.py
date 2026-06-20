@@ -6,7 +6,9 @@ from event_matching import (
     circular_distance_ms,
     match_confidence_from_distance,
     match_events_to_alert,
+    nearest_tick_distance_ms,
     phase_offset_ms,
+    refine_matching_period_ms,
 )
 
 
@@ -95,3 +97,35 @@ class TestMatchEventsToAlert:
         period_ms = 60_000.0
         phase_rad = math.pi / 10
         assert phase_offset_ms(phase_rad, period_ms) == pytest.approx(3_000.0)
+
+    def test_nearest_tick_matches_circular_for_same_phase(self):
+        period_ms = 60_000.0
+        phase_ms = 3_000.0
+        timestamp_ms = 123_000.0
+        assert nearest_tick_distance_ms(timestamp_ms, period_ms, phase_ms) == pytest.approx(
+            circular_distance_ms(timestamp_ms, period_ms, phase_ms),
+        )
+
+    def test_refine_period_nudges_toward_observed_spacing(self):
+        timestamps = [0, 30_000, 60_000, 90_000, 120_000]
+        refined = refine_matching_period_ms(timestamps, 29_000.0)
+        assert refined == pytest.approx(30_000.0)
+
+    def test_evenly_spaced_series_keeps_stable_match_scores(self):
+        period_ms = 30_000.0
+        phase_rad = 0.0
+        events = [(index + 1, index * 30_000) for index in range(8)]
+
+        matched = match_events_to_alert(
+            events,
+            ts_begin_ms=0,
+            ts_end_ms=240_000,
+            period_ms=29_000.0,
+            phase_rad=phase_rad,
+            min_confidence=25,
+            sigma_ms=500,
+        )
+
+        assert len(matched) >= 6
+        confidences = [item.confidence for item in matched]
+        assert max(confidences) - min(confidences) <= 5

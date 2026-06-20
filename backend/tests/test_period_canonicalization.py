@@ -5,7 +5,17 @@ import math
 import pytest
 
 from brain import build_alerts_from_sorted_timestamps_ms
-from fourier import evaluate_period, resolve_superharmonic_canonical_period, resolve_subharmonic_alias_period, period_supported_by_event_spacing, compute_spacing_alias_penalty
+from fourier import (
+    evaluate_period,
+    resolve_superharmonic_canonical_period,
+    resolve_subharmonic_alias_period,
+    period_supported_by_event_spacing,
+    compute_spacing_alias_penalty,
+    compute_spacing_coherence,
+    compute_period_median_gap_fit,
+    compute_spacing_selection_score,
+    rerank_harmonic_peaks_by_spacing,
+)
 from tests.helpers import NoiseProfile, make_mixed_timestamps_ms, make_periodic_timestamps_ms
 
 
@@ -84,7 +94,8 @@ class TestResolveSubharmonicAliasPeriod:
         assert result.canonicalized
         assert result.period_ms == 300_000.0
 
-    def test_subharmonic_resolution_disabled_by_default(self):
+    def test_subharmonic_resolution_can_be_disabled(self, override_harmonic_config):
+        override_harmonic_config(subharmonic_alias_resolution_enabled=False)
         timestamps = make_periodic_timestamps_ms(300_000, count=12)
         mag_1min, _phase_1min = evaluate_period(timestamps, 60_000.0)
 
@@ -113,6 +124,48 @@ class TestResolveSubharmonicAliasPeriod:
 
         assert not result.canonicalized
         assert result.period_ms == 60_000.0
+
+
+@pytest.mark.unit
+class TestSpacingSelectionScore:
+    def test_50s_spacing_prefers_50s_period_over_10s_alias(self):
+        timestamps = make_periodic_timestamps_ms(50_000, count=12)
+
+        score_10s = compute_spacing_selection_score(10_000.0, timestamps)
+        score_50s = compute_spacing_selection_score(50_000.0, timestamps)
+
+        assert score_50s > score_10s
+        assert compute_period_median_gap_fit(50_000.0, timestamps) == pytest.approx(1.0)
+        assert compute_period_median_gap_fit(10_000.0, timestamps) == pytest.approx(0.2)
+
+    def test_rerank_drops_short_harmonic_when_longer_fits_spacing(self):
+        timestamps = make_periodic_timestamps_ms(50_000, count=12)
+        mag_10s, _ = evaluate_period(timestamps, 10_000.0)
+        mag_50s, _ = evaluate_period(timestamps, 50_000.0)
+
+        reranked = rerank_harmonic_peaks_by_spacing(
+            [(10_000.0, mag_10s * 1.05), (50_000.0, mag_50s)],
+            timestamps,
+        )
+        periods = [period for period, _ in reranked]
+
+        assert 50_000.0 in periods
+        assert 10_000.0 not in periods
+
+
+@pytest.mark.noise
+class TestSpacingAwarePeriodIntegration:
+    def test_50s_timeline_reports_near_50s_not_10s(self):
+        timestamps = make_periodic_timestamps_ms(50_000, count=16)
+        alerts = build_alerts_from_sorted_timestamps_ms(
+            [int(timestamp) for timestamp in timestamps],
+            endpoint_id="spacing-50s",
+            native_event_id=12,
+        )
+
+        assert alerts
+        assert any(48_000 <= alert.period_ts <= 52_000 for alert in alerts)
+        assert not any(9_000 <= alert.period_ts <= 11_000 and alert.confidence >= 40 for alert in alerts)
 
 
 @pytest.mark.unit

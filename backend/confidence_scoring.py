@@ -588,6 +588,76 @@ def finalize_uncorroborated_window_confidence(breakdown: WindowConfidenceBreakdo
     return _round_confidence(penalized)
 
 
+def compute_evidence_sufficiency_penalty(
+    *,
+    period_ms: float,
+    ts_begin_ms: int,
+    ts_end_ms: int,
+    matched_count: int,
+    timestamps: list[float],
+) -> float:
+    """
+    Penalize alerts with too few in-window events or weak spacing support for the period.
+
+    Uses raw event count in the alert window for density (not grid-matched count), so
+    Fourier-detected windows are not over-penalized when phase alignment is slightly off.
+    """
+    from fourier import compute_spacing_selection_score
+
+    scoring = CONFIDENCE_SCORING_CONFIG
+    if not math.isfinite(period_ms) or period_ms <= 0:
+        return scoring.max_evidence_penalty
+
+    window_span_ms = max(0, int(ts_end_ms) - int(ts_begin_ms))
+    if window_span_ms <= 0:
+        return scoring.max_evidence_penalty
+
+    events_in_window = len(timestamps)
+    penalty = 0.0
+
+    if events_in_window < scoring.min_matched_events_for_publish:
+        shortfall = scoring.min_matched_events_for_publish - events_in_window
+        penalty += min(30.0, shortfall * 12.0)
+
+    expected_ticks = max(1.0, (window_span_ms / period_ms) + 1.0)
+    density_ratio = events_in_window / expected_ticks
+    if density_ratio < scoring.min_evidence_density_ratio:
+        severity = 1.0 - (density_ratio / scoring.min_evidence_density_ratio)
+        penalty += severity * 22.0
+
+    if timestamps:
+        spacing_score = compute_spacing_selection_score(period_ms, timestamps)
+        penalty += (1.0 - spacing_score) * 18.0
+        if matched_count < scoring.min_matched_events_for_publish:
+            grid_shortfall = scoring.min_matched_events_for_publish - matched_count
+            penalty += min(12.0, grid_shortfall * 4.0) * max(0.0, 1.0 - spacing_score)
+
+    return min(scoring.max_evidence_penalty, penalty)
+
+
+def apply_evidence_penalty(confidence: int, penalty: float) -> int:
+    return _round_confidence(max(0.0, float(confidence) - penalty))
+
+
+def should_publish_alert(
+    confidence: int,
+    *,
+    events_in_window: int,
+    matched_count: int,
+    spacing_score: float,
+) -> bool:
+    scoring = CONFIDENCE_SCORING_CONFIG
+    if events_in_window < scoring.min_matched_events_for_publish:
+        return False
+    if confidence < scoring.min_publish_confidence:
+        return False
+    if matched_count >= scoring.min_matched_events_for_publish:
+        return True
+    if matched_count >= 1 and spacing_score >= scoring.min_spacing_score_for_publish:
+        return True
+    return False
+
+
 def build_window_snapshot(
     *,
     ts_begin: int,

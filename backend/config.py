@@ -93,11 +93,17 @@ class HarmonicAnalysisConfig:
 	superharmonic_weak_double_ratio: float = 0.55
 
 	# Prefer the longest strong harmonic multiple (e.g. 5 min over 1 min alias).
-	# Disabled by default: stepping up can suppress genuine shorter periods when
-	# longer harmonics are accidentally strengthened by noise or overlapping signals.
-	subharmonic_alias_resolution_enabled: bool = False
-	subharmonic_alias_min_magnitude_ratio: float = 0.92
+	subharmonic_alias_resolution_enabled: bool = True
+	subharmonic_alias_min_magnitude_ratio: float = 0.88
 	subharmonic_alias_max_multiplier: int = 30
+	# When stepping up, promoted period should align with observed median spacing.
+	subharmonic_median_gap_fit_min: float = 0.72
+	# Re-rank Fourier peaks using spacing coherence + median-gap fit (idea 3 lite).
+	spacing_peak_rerank_enabled: bool = True
+	spacing_rerank_fourier_weight: float = 0.55
+	spacing_rerank_spacing_weight: float = 0.45
+	spacing_rerank_harmonic_domination_ratio: float = 0.92
+	spacing_gap_tolerance_ratio: float = 0.12
 	# Reject detections that collapse to one instant (not enough distinct timestamps).
 	min_unique_timestamps_for_period: int = 3
 	# Soft confidence penalty when period is much shorter than median event spacing.
@@ -155,6 +161,14 @@ class ConfidenceScoringConfig:
 	uncorroborated_single_window_base_threshold: float = 84.0
 	single_window_confidence_penalty: float = 10.0
 
+	# Evidence sufficiency (events in window vs span and spacing fit).
+	min_matched_events_for_publish: int = 3
+	min_publish_confidence: int = 22
+	max_evidence_penalty: float = 50.0
+	min_evidence_density_ratio: float = 0.15
+	# When grid matching is thin, still allow publish if spacing strongly supports the period.
+	min_spacing_score_for_publish: float = 0.62
+
 	# Logging
 	confidence_logging_enabled: bool = True
 
@@ -173,6 +187,8 @@ class EventMatchingConfig:
 	jitter_sigma_ms: float = 500.0
 	# Minimum per-event match confidence (0-100) stored in eventAlertMap.
 	min_match_confidence: int = 25
+	# When median spacing disagrees slightly with Fourier period, nudge for matching.
+	period_refinement_max_ratio_delta: float = 0.2
 
 
 EVENT_MATCHING_CONFIG = EventMatchingConfig()

@@ -230,3 +230,49 @@ class TestEvaluatePeriodPhaseSupport:
         _half_magnitude, half_phase = evaluate_period(timestamps, float(period_ms / 2))
 
         assert math.cos(fundamental_phase - half_phase) > 0.5
+
+
+@pytest.mark.unit
+class TestEvidenceSufficiency:
+    def test_sparse_two_event_window_is_heavily_penalized(self):
+        from confidence_scoring import (
+            apply_evidence_penalty,
+            compute_evidence_sufficiency_penalty,
+            should_publish_alert,
+        )
+
+        penalty = compute_evidence_sufficiency_penalty(
+            period_ms=29_000.0,
+            ts_begin_ms=0,
+            ts_end_ms=9 * 60_000,
+            matched_count=2,
+            timestamps=[0.0, 9 * 60_000.0],
+        )
+        final_confidence = apply_evidence_penalty(72, penalty)
+
+        assert penalty >= 30.0
+        assert not should_publish_alert(
+            final_confidence,
+            events_in_window=2,
+            matched_count=2,
+            spacing_score=0.1,
+        )
+
+    def test_dense_periodic_window_passes_publish_gate(self):
+        from confidence_scoring import compute_evidence_sufficiency_penalty, should_publish_alert
+
+        timestamps = [float(index * 30_000) for index in range(8)]
+        penalty = compute_evidence_sufficiency_penalty(
+            period_ms=30_000.0,
+            ts_begin_ms=0,
+            ts_end_ms=240_000,
+            matched_count=8,
+            timestamps=timestamps,
+        )
+        assert penalty < 10.0
+        assert should_publish_alert(
+            70 - int(penalty),
+            events_in_window=8,
+            matched_count=8,
+            spacing_score=0.95,
+        )

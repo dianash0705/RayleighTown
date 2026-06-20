@@ -1,3 +1,4 @@
+import logging
 import math
 from dataclasses import dataclass
 from typing import Callable, Iterable, List
@@ -18,6 +19,10 @@ from fourier import (
     resolve_superharmonic_canonical_period,
     resolve_subharmonic_alias_period,
     period_supported_by_event_spacing,
+    rerank_harmonic_peaks_by_spacing,
+    compute_spacing_coherence,
+    compute_period_median_gap_fit,
+    compute_spacing_selection_score,
 )
 from config import CONFIDENCE_SCORING_CONFIG, HARMONIC_ANALYSIS_CONFIG
 from confidence_log import log_confidence_event
@@ -25,11 +30,16 @@ from event_matching import MatchedEvent, match_events_to_alert
 from confidence_scoring import (
     ConfidenceBreakdown,
     WindowSnapshot,
+    apply_evidence_penalty,
     build_window_snapshot,
+    compute_evidence_sufficiency_penalty,
     compute_group_confidence,
     compute_window_confidence,
     finalize_uncorroborated_window_confidence,
+    should_publish_alert,
 )
+
+logger = logging.getLogger(__name__)
 
 UNKNOWN_TIMESTAMP_MS = -1
 UNKNOWN_CONFIDENCE = 0
@@ -495,9 +505,11 @@ def build_fourier_alert_from_sorted_timestamps_ms(
             plot_path = None
 
     timestamp_floats = [float(timestamp_ms) for timestamp_ms in sorted_timestamps_ms]
+    harmonic_points = rerank_harmonic_peaks_by_spacing(harmonic_points, timestamp_floats)
     alerts = []
     for point in harmonic_points:
-        period_ms = float(point[0])
+        fourier_period_ms = float(point[0])
+        period_ms = fourier_period_ms
         peak_magnitude = float(point[1])
         phase = float(phase_by_period.get(period_ms, math.nan))
 
@@ -528,6 +540,10 @@ def build_fourier_alert_from_sorted_timestamps_ms(
         if not period_supported_by_event_spacing(period_ms, timestamp_floats):
             continue
 
+        spacing_coherence = compute_spacing_coherence(period_ms, timestamp_floats)
+        median_gap_fit = compute_period_median_gap_fit(period_ms, timestamp_floats)
+        spacing_selection_score = compute_spacing_selection_score(period_ms, timestamp_floats)
+
         window_breakdown = compute_window_confidence(
             period_ms,
             peak_magnitude,
@@ -552,9 +568,16 @@ def build_fourier_alert_from_sorted_timestamps_ms(
                 {
                     "endpoint_id": context.endpoint_id,
                     "native_event_id": context.native_event_id,
+                    "fourier_period_ms": fourier_period_ms,
+                    "chosen_period_ms": period_ms,
                     "period_ms": period_ms,
-                    "canonicalized_from_period_ms": canonical.original_period_ms,
-                    "canonicalization_reason": canonical.reason,
+                    "superharmonic_from_period_ms": canonical.original_period_ms,
+                    "superharmonic_reason": canonical.reason,
+                    "subharmonic_from_period_ms": alias.original_period_ms,
+                    "subharmonic_reason": alias.reason,
+                    "spacing_coherence": spacing_coherence,
+                    "median_gap_fit": median_gap_fit,
+                    "spacing_selection_score": spacing_selection_score,
                     "ts_begin": sorted_timestamps_ms[0],
                     "ts_end": sorted_timestamps_ms[-1],
                     "confidence": finalize_uncorroborated_window_confidence(window_breakdown),
@@ -632,6 +655,71 @@ def _preserved_alert_record_to_alert_core(record: AlertRecord) -> AlertCore:
     )
 
 
+def _finalize_alert_record_from_core(
+    endpoint_id: str,
+    native_event_id: int,
+    alert_core: AlertCore,
+    candidate_events: list[tuple[int, int]],
+) -> AlertRecord | None:
+    matched_events = match_events_to_alert(
+        candidate_events,
+        ts_begin_ms=alert_core.ts_begin,
+        ts_end_ms=alert_core.ts_end,
+        period_ms=alert_core.period_ts,
+        phase_rad=alert_core.phase,
+    )
+    window_timestamps = [
+        float(timestamp_ms)
+        for _, timestamp_ms in candidate_events
+        if alert_core.ts_begin <= timestamp_ms <= alert_core.ts_end
+    ]
+    spacing_score = (
+        compute_spacing_selection_score(alert_core.period_ts, window_timestamps)
+        if window_timestamps
+        else 0.0
+    )
+    evidence_penalty = compute_evidence_sufficiency_penalty(
+        period_ms=alert_core.period_ts,
+        ts_begin_ms=alert_core.ts_begin,
+        ts_end_ms=alert_core.ts_end,
+        matched_count=len(matched_events),
+        timestamps=window_timestamps,
+    )
+    final_confidence = apply_evidence_penalty(alert_core.confidence, evidence_penalty)
+    if not should_publish_alert(
+        final_confidence,
+        events_in_window=len(window_timestamps),
+        matched_count=len(matched_events),
+        spacing_score=spacing_score,
+    ):
+        logger.info(
+            "Alert suppressed endpoint=%s nativeEventID=%s periodMs=%.0f "
+            "windowConf=%s finalConf=%s eventsInWindow=%s matched=%s "
+            "spacingScore=%.2f evidencePenalty=%.1f",
+            endpoint_id,
+            native_event_id,
+            alert_core.period_ts,
+            alert_core.confidence,
+            final_confidence,
+            len(window_timestamps),
+            len(matched_events),
+            spacing_score,
+            evidence_penalty,
+        )
+        return None
+
+    return AlertRecord(
+        endpoint_id=endpoint_id,
+        native_event_id=native_event_id,
+        matched_events=matched_events,
+        ts_begin=alert_core.ts_begin,
+        ts_end=alert_core.ts_end,
+        period_ts=alert_core.period_ts,
+        confidence=final_confidence,
+        phase=alert_core.phase,
+    )
+
+
 def _alert_cores_to_alert_records(
     endpoint_id: str,
     native_event_id: int,
@@ -660,24 +748,14 @@ def _alert_cores_to_alert_records(
                 },
             )
 
-        matched_events = match_events_to_alert(
+        alert_record = _finalize_alert_record_from_core(
+            endpoint_id,
+            native_event_id,
+            alert_core,
             candidate_events,
-            ts_begin_ms=alert_core.ts_begin,
-            ts_end_ms=alert_core.ts_end,
-            period_ms=alert_core.period_ts,
-            phase_rad=alert_core.phase,
         )
-
-        alert_record = AlertRecord(
-            endpoint_id=endpoint_id,
-            native_event_id=native_event_id,
-            matched_events=matched_events,
-            ts_begin=alert_core.ts_begin,
-            ts_end=alert_core.ts_end,
-            period_ts=alert_core.period_ts,
-            confidence=alert_core.confidence,
-            phase=alert_core.phase,
-        )
+        if alert_record is None:
+            continue
         alert_key = (
             alert_record.endpoint_id,
             alert_record.native_event_id,
@@ -732,25 +810,41 @@ def build_alerts_for_native_event_incremental(
         if built is not None:
             recomputed_cores.append(built)
 
-    preserved_cores = [
-        _preserved_alert_record_to_alert_core(record)
-        for record in preserved_alert_records
-    ]
-    combined_cores = suppress_harmonic_ghost_alerts(preserved_cores + recomputed_cores)
-    merged_cores = _merge_overlapping_alert_cores(
-        combined_cores,
-        endpoint_id=endpoint_id,
-        native_event_id=native_event_id,
-    )
+    recomputed_merged = suppress_harmonic_ghost_alerts(recomputed_cores)
+    if recomputed_merged:
+        recomputed_merged = _merge_overlapping_alert_cores(
+            recomputed_merged,
+            endpoint_id=endpoint_id,
+            native_event_id=native_event_id,
+        )
 
     seen_alert_keys: set[tuple] = set()
-    return _alert_cores_to_alert_records(
-        endpoint_id,
-        native_event_id,
-        native_events,
-        merged_cores,
-        seen_alert_keys,
-    )
+    alerts: list[AlertRecord] = []
+    for record in preserved_alert_records:
+        alert_key = (
+            record.endpoint_id,
+            record.native_event_id,
+            record.ts_begin,
+            record.ts_end,
+            record.period_ts,
+            record.confidence,
+        )
+        if alert_key in seen_alert_keys:
+            continue
+        seen_alert_keys.add(alert_key)
+        alerts.append(record)
+
+    if recomputed_merged:
+        alerts.extend(
+            _alert_cores_to_alert_records(
+                endpoint_id,
+                native_event_id,
+                native_events,
+                recomputed_merged,
+                seen_alert_keys,
+            )
+        )
+    return alerts
 
 
 def build_alerts_for_endpoint_incremental(
@@ -851,24 +945,14 @@ def build_alerts_for_endpoint(
                 (event.internal_event_id, event.timestamp_ms)
                 for event in native_events
             ]
-            matched_events = match_events_to_alert(
+            alert_record = _finalize_alert_record_from_core(
+                endpoint_id,
+                native_event_id,
+                alert_core,
                 candidate_events,
-                ts_begin_ms=alert_core.ts_begin,
-                ts_end_ms=alert_core.ts_end,
-                period_ms=alert_core.period_ts,
-                phase_rad=alert_core.phase,
             )
-
-            alert_record = AlertRecord(
-                endpoint_id=endpoint_id,
-                native_event_id=native_event_id,
-                matched_events=matched_events,
-                ts_begin=alert_core.ts_begin,
-                ts_end=alert_core.ts_end,
-                period_ts=alert_core.period_ts,
-                confidence=alert_core.confidence,
-                phase=alert_core.phase,
-            )
+            if alert_record is None:
+                continue
             alert_key = (
                 alert_record.endpoint_id,
                 alert_record.native_event_id,

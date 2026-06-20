@@ -216,6 +216,116 @@ def compute_spacing_alias_penalty(period_ms: float, timestamps: list[float]) -> 
     return severity * config.max_spacing_alias_penalty
 
 
+def compute_spacing_coherence(period_ms: float, timestamps: list[float]) -> float:
+    """
+    Fraction of inter-event gaps that align with an integer multiple of ``period_ms``.
+
+    High for both the true period and its shorter harmonics; combine with median-gap
+    fit when scoring candidate periods.
+    """
+    config = HARMONIC_ANALYSIS_CONFIG
+    if not timestamps or not math.isfinite(period_ms) or period_ms <= 0:
+        return 0.0
+
+    unique_sorted = sorted({float(timestamp) for timestamp in timestamps})
+    if len(unique_sorted) < 2:
+        return 0.0
+
+    gaps = [
+        unique_sorted[index + 1] - unique_sorted[index]
+        for index in range(len(unique_sorted) - 1)
+        if unique_sorted[index + 1] > unique_sorted[index]
+    ]
+    if not gaps:
+        return 0.0
+
+    tolerance_ratio = config.spacing_gap_tolerance_ratio
+    aligned = 0
+    for gap in gaps:
+        multiplier = max(1, round(gap / period_ms))
+        expected_gap = multiplier * period_ms
+        tolerance_ms = max(500.0, period_ms * tolerance_ratio)
+        if abs(gap - expected_gap) <= tolerance_ms:
+            aligned += 1
+
+    return aligned / len(gaps)
+
+
+def compute_period_median_gap_fit(period_ms: float, timestamps: list[float]) -> float:
+    """Symmetric fit in [0, 1]: 1 when period equals median spacing."""
+    median_gap_ms = _median_positive_inter_event_gap_ms(timestamps)
+    if median_gap_ms <= 0 or not math.isfinite(period_ms) or period_ms <= 0:
+        return 0.0
+    return min(period_ms / median_gap_ms, median_gap_ms / period_ms)
+
+
+def compute_spacing_selection_score(period_ms: float, timestamps: list[float]) -> float:
+    """Combined spacing score used to re-rank Fourier peaks."""
+    coherence = compute_spacing_coherence(period_ms, timestamps)
+    fit = compute_period_median_gap_fit(period_ms, timestamps)
+    return coherence * fit
+
+
+def rerank_harmonic_peaks_by_spacing(
+    harmonic_points: list[tuple[float, float]],
+    timestamps: list[float],
+) -> list[tuple[float, float]]:
+    """
+    Re-rank harmonic peaks by Fourier magnitude + spacing alignment.
+
+    Drops shorter harmonic aliases when a longer period in the same family scores
+    better on the combined metric.
+    """
+    config = HARMONIC_ANALYSIS_CONFIG
+    if not harmonic_points or not timestamps or not config.spacing_peak_rerank_enabled:
+        return harmonic_points
+
+    max_magnitude = max(magnitude for _, magnitude in harmonic_points) or 1.0
+    scored: list[tuple[float, float, float]] = []
+
+    for period_ms, magnitude in harmonic_points:
+        fourier_norm = magnitude / max_magnitude
+        spacing_score = compute_spacing_selection_score(period_ms, timestamps)
+        combined = (
+            config.spacing_rerank_fourier_weight * fourier_norm
+            + config.spacing_rerank_spacing_weight * spacing_score
+        )
+        scored.append((period_ms, magnitude, combined))
+
+    scored.sort(key=lambda item: item[2], reverse=True)
+
+    kept: list[tuple[float, float, float]] = []
+
+    for period_ms, magnitude, combined in scored:
+        kept = [
+            entry
+            for entry in kept
+            if not (
+                _is_harmonic_period(
+                    period_ms,
+                    entry[0],
+                    config.harmonic_tolerance_ratio,
+                )
+                and combined >= entry[2] * config.spacing_rerank_harmonic_domination_ratio
+            )
+        ]
+
+        dominated = False
+        for kept_period_ms, _, kept_combined in kept:
+            if _is_harmonic_period(
+                kept_period_ms,
+                period_ms,
+                config.harmonic_tolerance_ratio,
+            ) and kept_combined >= combined * config.spacing_rerank_harmonic_domination_ratio:
+                dominated = True
+                break
+
+        if not dominated:
+            kept.append((period_ms, magnitude, combined))
+
+    return [(period_ms, magnitude) for period_ms, magnitude, _ in kept] if kept else harmonic_points
+
+
 def resolve_subharmonic_alias_period(
     period_ms: float,
     peak_magnitude: float,
@@ -266,6 +376,10 @@ def resolve_subharmonic_alias_period(
             continue
 
         if median_gap_ms > 0 and candidate_period_ms < median_gap_ms * config.min_period_to_median_gap_ratio:
+            continue
+
+        candidate_fit = compute_period_median_gap_fit(candidate_period_ms, timestamps)
+        if candidate_fit < config.subharmonic_median_gap_fit_min:
             continue
 
         if candidate_magnitude >= best_magnitude * 0.98 or candidate_period_ms >= median_gap_ms * 0.75:

@@ -314,7 +314,7 @@ for (const header of sortableHeaders) {
   });
 }
 
-const timestampFormatter = new Intl.DateTimeFormat("en-US", {
+const timestampFormatter = new Intl.DateTimeFormat("en-GB", {
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
@@ -322,6 +322,19 @@ const timestampFormatter = new Intl.DateTimeFormat("en-US", {
   minute: "2-digit",
   second: "2-digit",
   fractionalSecondDigits: 3,
+  hour12: false,
+});
+
+const timelineDateFormatter = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+});
+
+const timelineTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
   hour12: false,
 });
 
@@ -619,12 +632,15 @@ function timelinePercent(timestampMs, tsBeginMs, tsEndMs) {
 }
 
 function formatTimelineAxisLabel(value) {
-  const exact = formatExactTimestamp(value);
-  const parts = exact.split(", ");
-  if (parts.length >= 2) {
-    return parts[0] + " " + parts[1];
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return String(value);
   }
-  return exact;
+  const date = new Date(number);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+  return timelineDateFormatter.format(date) + " " + timelineTimeFormatter.format(date);
 }
 
 function formatShortTime(value) {

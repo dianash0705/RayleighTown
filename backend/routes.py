@@ -500,6 +500,15 @@ def register_routes(app):
         if log_config is None:
             return jsonify({"error": f"Unsupported logID: {log_id}."}), 400
 
+        file_size_mb = destination.stat().st_size / (1024 * 1024)
+        logger.info(
+            "Log upload saved endpoint=%s logID=%s file=%s size=%.1fMB — starting extraction",
+            endpoint_id,
+            log_id,
+            saved_name,
+            file_size_mb,
+        )
+
         try:
             extractor = log_config["extractor"]
             event_id_whitelist = log_config["event_id_whitelist"]

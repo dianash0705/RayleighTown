@@ -96,6 +96,9 @@ else {
     }
 }
 Write-Host "Uploading log file to $BackendUrl ..."
+$fileSizeBytes = (Get-Item -LiteralPath $logFilePath).Length
+$fileSizeMb = [math]::Round($fileSizeBytes / 1MB, 1)
+Write-Host ("Upload size: {0} MB" -f $fileSizeMb)
 try {
     $additionalForm = @()
 
@@ -126,7 +129,7 @@ try {
         $agentIp = $null
     }
 
-    $curlArgs = @('-sS','-f','-X','POST',"$BackendUrl","-F","endpointID=$EndpointID","-F","endpointSecret=$EndpointSecret","-F","logID=$logID","-F","log_file=@$logFilePath")
+    $curlArgs = @('-#','-S','-f','-X','POST',"$BackendUrl","-F","endpointID=$EndpointID","-F","endpointSecret=$EndpointSecret","-F","logID=$logID","-F","log_file=@$logFilePath")
     if ($agentHostname) {
         $curlArgs += '-F'
         $curlArgs += "hostname=$agentHostname"

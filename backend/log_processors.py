@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 import json
+import logging
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -8,7 +10,12 @@ from typing import Any
 from event_parsers import parse_event_details
 from event_parsers.common import extract_endpoint_agent_metadata, normalize_payload
 
+logger = logging.getLogger(__name__)
+
 EVENT_XML_NAMESPACE = {"e": "http://schemas.microsoft.com/win/2004/08/events/event"}
+
+LARGE_FILE_PROGRESS_BYTES = 5 * 1024 * 1024
+PROGRESS_REPORT_STEP_PCT = 10
 
 
 def _system_time_to_epoch_ms(system_time_text: str) -> int:
@@ -86,10 +93,62 @@ def _evtx_to_payload(root: ET.Element) -> dict[str, Any]:
     return payload
 
 
+def _maybe_log_extraction_progress(
+    *,
+    label: str,
+    file_size: int,
+    position: int,
+    line_count: int,
+    parsed_count: int,
+    started_at: float,
+    last_reported_pct: int,
+) -> int:
+    if file_size < LARGE_FILE_PROGRESS_BYTES:
+        return last_reported_pct
+
+    pct = min(99, int(position * 100 / file_size))
+    if pct < last_reported_pct + PROGRESS_REPORT_STEP_PCT:
+        return last_reported_pct
+
+    elapsed = time.monotonic() - started_at
+    eta_sec = (elapsed / pct * (100 - pct)) if pct > 0 else 0.0
+    logger.info(
+        "Extracting %s: %s%% (%s lines read, %s events kept, %.0fs elapsed, ~%.0fs remaining)",
+        label,
+        pct,
+        line_count,
+        parsed_count,
+        elapsed,
+        eta_sec,
+    )
+    return pct - (pct % PROGRESS_REPORT_STEP_PCT)
+
+
 def _extract_json_events(log_path: Path, event_id_whitelist, log_id: int):
     events = []
+    file_size = log_path.stat().st_size
+    label = log_path.name
+    started_at = time.monotonic()
+    last_reported_pct = -1
+    line_count = 0
+
     with log_path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
+        while True:
+            raw_line = handle.readline()
+            if not raw_line:
+                break
+
+            line_count += 1
+            last_reported_pct = _maybe_log_extraction_progress(
+                label=label,
+                file_size=file_size,
+                position=handle.tell(),
+                line_count=line_count,
+                parsed_count=len(events),
+                started_at=started_at,
+                last_reported_pct=last_reported_pct,
+            )
+
             line = raw_line.strip()
             if not line:
                 continue
@@ -136,6 +195,16 @@ def _extract_json_events(log_path: Path, event_id_whitelist, log_id: int):
                     record=record,
                 )
             )
+
+    if file_size >= LARGE_FILE_PROGRESS_BYTES:
+        elapsed = time.monotonic() - started_at
+        logger.info(
+            "Extracting %s: 100%% (%s lines read, %s events kept, %.0fs total)",
+            label,
+            line_count,
+            len(events),
+            elapsed,
+        )
 
     return events
 
