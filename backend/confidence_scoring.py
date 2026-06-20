@@ -700,16 +700,100 @@ def apply_grid_corroboration(
     return max(confidence, corroborated)
 
 
+def cap_confidence_by_match_evidence(
+    confidence: int,
+    *,
+    matched_count: int,
+    period_ms: float,
+    ts_begin_ms: int,
+    ts_end_ms: int,
+    matched_timestamps: list[float],
+) -> int:
+    """Prevent high Fourier scores from surviving on thin or implausible grid support."""
+    from fourier import compute_period_median_gap_fit
+
+    scoring = CONFIDENCE_SCORING_CONFIG
+    capped = confidence
+
+    if matched_count <= 4:
+        capped = min(capped, scoring.max_confidence_when_matched_at_most_4)
+
+    if (
+        math.isfinite(period_ms)
+        and period_ms > scoring.long_period_publish_threshold_ms
+        and matched_count < scoring.min_matched_events_for_long_period_publish
+    ):
+        capped = min(capped, scoring.max_confidence_when_matched_at_most_4)
+
+    window_span_ms = max(0, int(ts_end_ms) - int(ts_begin_ms))
+    if window_span_ms > 0 and math.isfinite(period_ms) and period_ms > 0 and matched_count > 0:
+        expected_ticks = max(1.0, (window_span_ms / period_ms) + 1.0)
+        coverage = matched_count / expected_ticks
+        if coverage < scoring.min_match_coverage_ratio and matched_count < 6:
+            capped = min(capped, scoring.max_confidence_when_matched_at_most_4)
+
+    if matched_timestamps and len(matched_timestamps) >= 2 and math.isfinite(period_ms) and period_ms > 0:
+        median_gap_fit = compute_period_median_gap_fit(period_ms, matched_timestamps)
+        if median_gap_fit < scoring.min_median_gap_fit_for_corroboration and matched_count < 6:
+            capped = min(capped, scoring.max_confidence_when_matched_at_most_4)
+
+    return _round_confidence(capped)
+
+
 def should_publish_alert(
     confidence: int,
     *,
     events_in_window: int,
     matched_count: int,
     spacing_score: float,
+    period_ms: float | None = None,
+    ts_begin_ms: int | None = None,
+    ts_end_ms: int | None = None,
+    matched_timestamps: list[float] | None = None,
 ) -> bool:
+    from fourier import compute_period_median_gap_fit
+
     scoring = CONFIDENCE_SCORING_CONFIG
+    if (
+        period_ms is not None
+        and math.isfinite(period_ms)
+        and period_ms < scoring.min_publish_period_ms
+    ):
+        return False
     if events_in_window < scoring.min_matched_events_for_publish:
         return False
+    if matched_count < scoring.min_matched_events_for_publish:
+        if not (matched_count >= 1 and spacing_score >= scoring.min_spacing_score_for_publish):
+            return False
+
+    if (
+        period_ms is not None
+        and math.isfinite(period_ms)
+        and period_ms > scoring.long_period_publish_threshold_ms
+        and matched_count < scoring.min_matched_events_for_long_period_publish
+    ):
+        return False
+
+    if (
+        period_ms is not None
+        and ts_begin_ms is not None
+        and ts_end_ms is not None
+        and math.isfinite(period_ms)
+        and period_ms > 0
+        and matched_count > 0
+    ):
+        window_span_ms = max(0, int(ts_end_ms) - int(ts_begin_ms))
+        if window_span_ms > 0:
+            expected_ticks = max(1.0, (window_span_ms / period_ms) + 1.0)
+            coverage = matched_count / expected_ticks
+            if coverage < scoring.min_match_coverage_ratio and matched_count < 6:
+                return False
+
+        if matched_timestamps and len(matched_timestamps) >= 2:
+            median_gap_fit = compute_period_median_gap_fit(period_ms, matched_timestamps)
+            if median_gap_fit < scoring.min_median_gap_fit_for_corroboration and matched_count < 6:
+                return False
+
     min_confidence = scoring.min_publish_confidence
     if matched_count >= scoring.min_matched_events_for_publish:
         min_confidence = min(

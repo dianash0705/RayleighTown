@@ -317,7 +317,9 @@ def register_routes(app):
     @admin_required
     def add_endpoint(account):
         payload = request.get_json(silent=True) or {}
-        display_name = (payload.get("name") or "").strip() or None
+        display_name = (payload.get("name") or "").strip()
+        if not display_name:
+            return jsonify({"error": "Endpoint name is required."}), 400
         registration = register_endpoint(account["organizationID"], display_name)
         # The secret is returned only here; it is never retrievable again.
         return jsonify({"endpoint": registration}), 201

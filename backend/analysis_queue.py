@@ -32,7 +32,7 @@ class IngestJob:
 @dataclass
 class EndpointAnalysisJob:
     endpoint_id: str
-    impacts: dict[int, NativeEventImpact] = field(default_factory=dict)
+    impacts: dict[tuple[int, str], NativeEventImpact] = field(default_factory=dict)
     method: str = "fourier"
 
     @property
@@ -45,14 +45,15 @@ class EndpointAnalysisJob:
 
     @property
     def event_type_ids(self) -> list[int]:
-        return sorted(self.impacts)
+        return sorted({native_event_id for native_event_id, _ in self.impacts})
 
     def merge_impacts(self, impacts: list[NativeEventImpact]) -> None:
         for impact in impacts:
-            existing = self.impacts.get(impact.native_event_id)
+            existing = self.impacts.get(impact.impact_key)
             if existing is None:
-                self.impacts[impact.native_event_id] = NativeEventImpact(
+                self.impacts[impact.impact_key] = NativeEventImpact(
                     native_event_id=impact.native_event_id,
+                    series_key=impact.series_key,
                     new_min_ms=impact.new_min_ms,
                     new_max_ms=impact.new_max_ms,
                     new_event_count=impact.new_event_count,

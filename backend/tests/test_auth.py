@@ -132,10 +132,17 @@ def test_show_endpoint_secret_returns_stored_value(temp_db):
     assert database.get_endpoint_secret(other["organizationID"], registration["endpointID"]) is None
 
 
+def test_register_endpoint_requires_display_name(temp_db):
+    admin = database.create_organization_with_admin("Acme", "root", "pw123")
+    org_id = admin["organizationID"]
+    with pytest.raises(ValueError, match="display name"):
+        database.register_endpoint(org_id, "   ")
+
+
 def test_reset_endpoint_secret_rotates_and_invalidates_old(temp_db):
     admin = database.create_organization_with_admin("Acme", "root", "pw123")
     org_id = admin["organizationID"]
-    registration = database.register_endpoint(org_id, None)
+    registration = database.register_endpoint(org_id, "Test endpoint")
     endpoint_id = registration["endpointID"]
     old_secret = registration["secret"]
 
@@ -157,7 +164,7 @@ def test_reset_endpoint_secret_rotates_and_invalidates_old(temp_db):
 def test_delete_endpoint_scoped_to_org(temp_db):
     admin_a = database.create_organization_with_admin("Acme", "root", "pw123")
     admin_b = database.create_organization_with_admin("Beta", "root", "pw123")
-    endpoint = database.register_endpoint(admin_a["organizationID"], None)
+    endpoint = database.register_endpoint(admin_a["organizationID"], "Endpoint A")
 
     # Org B cannot delete org A's endpoint.
     assert database.delete_endpoint(admin_b["organizationID"], endpoint["endpointID"]) is False
@@ -198,7 +205,7 @@ def test_reads_are_scoped_to_organization(temp_db):
 def test_alert_detail_blocked_cross_org(temp_db):
     admin_a = database.create_organization_with_admin("Acme", "root", "pw123")
     admin_b = database.create_organization_with_admin("Beta", "root", "pw123")
-    endpoint_a = database.register_endpoint(admin_a["organizationID"], None)["endpointID"]
+    endpoint_a = database.register_endpoint(admin_a["organizationID"], "Endpoint A")["endpointID"]
     group_id = _insert_alert_group(temp_db, endpoint_a)
 
     assert database.fetch_alert_detail(group_id, organization_id=admin_a["organizationID"]) is not None

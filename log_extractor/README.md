@@ -5,13 +5,34 @@ A minimal manual script that:
 2. Uploads it to the backend (`POST /api/logs/upload`) with a configurable `endpointID` and `logID=0`
 3. Deletes the temporary exported file only when the script created it
 
-## Run
+## Run once (manual upload)
 
 ```powershell
 cd log_extractor
-if not works: Set-ExecutionPolicy -Scope Process Bypass
-./extract_and_upload_security_log.ps1
+./extract_and_upload_security_log.ps1 -Mode Run
 ```
+
+## Register periodic upload (scheduled task)
+
+Run once as Administrator to create a Windows Scheduled Task that exports the Security log and uploads it every 15 minutes (configurable in `agent_config.json`):
+
+```powershell
+./extract_and_upload_security_log.ps1 -Mode Register
+```
+
+Remove the scheduled task:
+
+```powershell
+./extract_and_upload_security_log.ps1 -Mode Unregister
+```
+
+Modes:
+
+- `Run` — export Security log (unless `-CustomLogPath` is set) and upload once
+- `Register` — install/update the scheduled task using settings from `agent_config.json`
+- `Unregister` — remove the scheduled task
+
+## Options
 
 Optional backend override:
 

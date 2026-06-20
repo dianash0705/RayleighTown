@@ -307,6 +307,10 @@ addUserForm.addEventListener("submit", async (event) => {
 addEndpointForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const name = document.getElementById("newEndpointName").value.trim();
+  if (!name) {
+    showStatus("Endpoint name is required.", true);
+    return;
+  }
   try {
     const data = await api("/api/admin/endpoints", {
       method: "POST",

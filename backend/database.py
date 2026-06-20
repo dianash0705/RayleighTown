@@ -213,6 +213,7 @@ def init_db():
     _ensure_column(cursor=conn.cursor(), table_name="alertGroups", column_definition="logID INTEGER")
     _ensure_column(cursor=conn.cursor(), table_name="logs", column_definition="rawPayload TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(cursor=conn.cursor(), table_name="logs", column_definition="parsedDetails TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(cursor=conn.cursor(), table_name="alerts", column_definition="seriesKey TEXT NOT NULL DEFAULT ''")
     conn.commit()
     cursor.execute(
         """
@@ -446,7 +447,9 @@ def register_endpoint(organization_id: int, display_name: str | None) -> dict:
     The secret is stored (so admins can re-display it for a lost agent) alongside a
     hash that is used for the actual authentication checks.
     """
-    display_name = (display_name or "").strip() or None
+    display_name = (display_name or "").strip()
+    if not display_name:
+        raise ValueError("Endpoint display name is required.")
     secret = generate_endpoint_secret()
 
     conn = connect_db()
@@ -682,7 +685,7 @@ def insert_events(endpoint_id: str, log_id: int, events) -> InsertEventsResult:
         endpoint_hostname = None
         endpoint_ip = None
         skipped_count = 0
-        impact_bounds: dict[int, dict[str, int]] = {}
+        impact_bounds: dict[tuple[int, str], dict[str, int]] = {}
         rows_to_insert: list[tuple] = []
 
         for event in events:
@@ -704,6 +707,7 @@ def insert_events(endpoint_id: str, log_id: int, events) -> InsertEventsResult:
 
             raw_payload = event.get("raw_payload") or {}
             parsed_details = event.get("parsed_details") or {}
+            series_key = str(parsed_details.get("seriesKey") or "")
             agent_hostname, agent_ip = extract_endpoint_agent_metadata(raw_payload)
             hostname = event.get("hostname") or agent_hostname
             ip = event.get("ip") or agent_ip
@@ -729,7 +733,7 @@ def insert_events(endpoint_id: str, log_id: int, events) -> InsertEventsResult:
             next_internal_event_id += 1
 
             bounds = impact_bounds.setdefault(
-                native_event_id,
+                (native_event_id, series_key),
                 {"min": timestamp_ms, "max": timestamp_ms, "count": 0},
             )
             bounds["min"] = min(bounds["min"], timestamp_ms)
@@ -774,11 +778,12 @@ def insert_events(endpoint_id: str, log_id: int, events) -> InsertEventsResult:
     impacts = [
         NativeEventImpact(
             native_event_id=native_id,
+            series_key=series_key,
             new_min_ms=bounds["min"],
             new_max_ms=bounds["max"],
             new_event_count=bounds["count"],
         )
-        for native_id, bounds in impact_bounds.items()
+        for (native_id, series_key), bounds in impact_bounds.items()
     ]
     return InsertEventsResult(
         inserted_count=inserted_count,
@@ -792,7 +797,7 @@ def fetch_events_for_endpoint(endpoint_id: str) -> list[EventRecord]:
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT internalEventID, nativeEventID, timestamp
+        SELECT internalEventID, nativeEventID, timestamp, parsedDetails
         FROM logs
         WHERE endpointID = ?
         ORDER BY timestamp
@@ -802,14 +807,24 @@ def fetch_events_for_endpoint(endpoint_id: str) -> list[EventRecord]:
     rows = cursor.fetchall()
     conn.close()
 
-    return [
-        EventRecord(
-            internal_event_id=internal_event_id,
-            native_event_id=native_event_id,
-            timestamp_ms=timestamp,
+    events: list[EventRecord] = []
+    for internal_event_id, native_event_id, timestamp, parsed_details_text in rows:
+        series_key = ""
+        if parsed_details_text:
+            try:
+                parsed_details = json.loads(parsed_details_text)
+                series_key = str(parsed_details.get("seriesKey") or "")
+            except json.JSONDecodeError:
+                series_key = ""
+        events.append(
+            EventRecord(
+                internal_event_id=internal_event_id,
+                native_event_id=native_event_id,
+                timestamp_ms=timestamp,
+                series_key=series_key,
+            )
         )
-        for internal_event_id, native_event_id, timestamp in rows
-    ]
+    return events
 
 
 def _alert_log_id(cursor, endpoint_id: str, native_event_id: int, event_ids: list[int]) -> int | None:
@@ -845,25 +860,28 @@ def fetch_preserved_alert_records(
     native_event_id: int,
     impact_min_ms: int,
     impact_max_ms: int,
+    *,
+    series_key: str = "",
 ) -> list[AlertRecord]:
     """Return existing window alerts that do not overlap the new-event impact range."""
     conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT alertID, tsBegin, tsEnd, periodTs, confidence, phase
+        SELECT alertID, tsBegin, tsEnd, periodTs, confidence, phase, seriesKey
         FROM alerts
         WHERE endpointID = ?
           AND nativeEventID = ?
+          AND seriesKey = ?
           AND NOT (tsBegin <= ? AND tsEnd >= ?)
         ORDER BY tsBegin ASC, tsEnd ASC, alertID ASC
         """,
-        (endpoint_id, native_event_id, impact_max_ms, impact_min_ms),
+        (endpoint_id, native_event_id, series_key, impact_max_ms, impact_min_ms),
     )
     rows = cursor.fetchall()
 
     preserved: list[AlertRecord] = []
-    for alert_id, ts_begin, ts_end, period_ts, confidence, phase in rows:
+    for alert_id, ts_begin, ts_end, period_ts, confidence, phase, alert_series_key in rows:
         cursor.execute(
             """
             SELECT eventID, confidence
@@ -900,6 +918,7 @@ def fetch_preserved_alert_records(
                 endpoint_id=endpoint_id,
                 native_event_id=native_event_id,
                 matched_events=tuple(matched_events),
+                series_key=str(alert_series_key or ""),
                 ts_begin=int(ts_begin),
                 ts_end=int(ts_end),
                 period_ts=float(period_ts),
@@ -920,6 +939,8 @@ def _group_raw_alert_rows(raw_alert_rows: list[dict]) -> list[dict]:
             if group["endpoint_id"] != raw_alert_row["endpoint_id"]:
                 continue
             if group["native_event_id"] != raw_alert_row["native_event_id"]:
+                continue
+            if group.get("series_key", "") != raw_alert_row.get("series_key", ""):
                 continue
             if not periods_near_match(group["period_ts"], raw_alert_row["period_ts"]):
                 continue
@@ -943,6 +964,7 @@ def _group_raw_alert_rows(raw_alert_rows: list[dict]) -> list[dict]:
             group = {
                 "endpoint_id": raw_alert_row["endpoint_id"],
                 "native_event_id": raw_alert_row["native_event_id"],
+                "series_key": raw_alert_row.get("series_key", ""),
                 "log_id": raw_alert_row["log_id"],
                 "ts_begin": raw_alert_row["ts_begin"],
                 "ts_end": raw_alert_row["ts_end"],
@@ -1024,8 +1046,9 @@ def _insert_alert_records(cursor, alerts) -> list[dict]:
                 tsEnd,
                 periodTs,
                 confidence,
-                phase
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                phase,
+                seriesKey
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 alert.endpoint_id,
@@ -1036,6 +1059,7 @@ def _insert_alert_records(cursor, alerts) -> list[dict]:
                 alert.period_ts,
                 alert.confidence,
                 alert.phase,
+                alert.series_key,
             ),
         )
         alert_id = cursor.lastrowid
@@ -1044,6 +1068,7 @@ def _insert_alert_records(cursor, alerts) -> list[dict]:
                 "alert_id": alert_id,
                 "endpoint_id": alert.endpoint_id,
                 "native_event_id": alert.native_event_id,
+                "series_key": alert.series_key,
                 "log_id": log_id,
                 "ts_begin": alert.ts_begin,
                 "ts_end": alert.ts_end,
@@ -1076,35 +1101,36 @@ def _delete_alert_groups_for_endpoint(cursor, endpoint_id: str) -> None:
     cursor.execute("DELETE FROM alertGroups WHERE endpointID = ?", (endpoint_id,))
 
 
-def replace_alerts_for_native_event_types(
+def replace_alerts_for_affected_series(
     endpoint_id: str,
     alerts,
-    affected_native_event_ids: set[int],
+    affected_series_keys: set[tuple[int, str]],
 ) -> int:
-    if not affected_native_event_ids:
+    if not affected_series_keys:
         return 0
 
     with _DB_WRITE_LOCK:
         conn = connect_db()
         cursor = conn.cursor()
 
-        placeholders = ",".join("?" for _ in affected_native_event_ids)
-        params = (endpoint_id, *sorted(affected_native_event_ids))
-
-        cursor.execute(
-            f"""
-            DELETE FROM eventAlertMap
-            WHERE alertID IN (
-                SELECT alertID FROM alerts
-                WHERE endpointID = ? AND nativeEventID IN ({placeholders})
+        for native_event_id, series_key in sorted(affected_series_keys):
+            cursor.execute(
+                """
+                DELETE FROM eventAlertMap
+                WHERE alertID IN (
+                    SELECT alertID FROM alerts
+                    WHERE endpointID = ? AND nativeEventID = ? AND seriesKey = ?
+                )
+                """,
+                (endpoint_id, native_event_id, series_key),
             )
-            """,
-            params,
-        )
-        cursor.execute(
-            f"DELETE FROM alerts WHERE endpointID = ? AND nativeEventID IN ({placeholders})",
-            params,
-        )
+            cursor.execute(
+                """
+                DELETE FROM alerts
+                WHERE endpointID = ? AND nativeEventID = ? AND seriesKey = ?
+                """,
+                (endpoint_id, native_event_id, series_key),
+            )
 
         _delete_alert_groups_for_endpoint(cursor, endpoint_id)
 
@@ -1112,10 +1138,10 @@ def replace_alerts_for_native_event_types(
 
         cursor.execute(
             """
-            SELECT alertID, endpointID, nativeEventID, logID, tsBegin, tsEnd, periodTs, confidence, phase
+            SELECT alertID, endpointID, nativeEventID, logID, tsBegin, tsEnd, periodTs, confidence, phase, seriesKey
             FROM alerts
             WHERE endpointID = ?
-            ORDER BY nativeEventID ASC, tsBegin ASC, tsEnd ASC, alertID ASC
+            ORDER BY nativeEventID ASC, seriesKey ASC, tsBegin ASC, tsEnd ASC, alertID ASC
             """,
             (endpoint_id,),
         )
@@ -1131,6 +1157,7 @@ def replace_alerts_for_native_event_types(
                 "period_ts": row[6],
                 "confidence": row[7],
                 "phase": row[8],
+                "series_key": row[9] or "",
             }
             for row in all_rows
         ]
@@ -1141,6 +1168,20 @@ def replace_alerts_for_native_event_types(
         conn.commit()
         conn.close()
         return len(grouped_alerts)
+
+
+def replace_alerts_for_native_event_types(
+    endpoint_id: str,
+    alerts,
+    affected_native_event_ids: set[int],
+) -> int:
+    affected_series_keys = {
+        (alert.native_event_id, alert.series_key)
+        for alert in alerts
+    }
+    if not affected_series_keys and affected_native_event_ids:
+        affected_series_keys = {(native_event_id, "") for native_event_id in affected_native_event_ids}
+    return replace_alerts_for_affected_series(endpoint_id, alerts, affected_series_keys)
 
 
 def incremental_recompute_alerts_for_endpoint(
@@ -1167,8 +1208,9 @@ def incremental_recompute_alerts_for_endpoint(
             elapsed_sec=0.0,
         )
 
+    affected_series_keys = {impact.impact_key for impact in impacts}
     affected_native_event_ids = {impact.native_event_id for impact in impacts}
-    preserved_by_native_event: dict[int, list[AlertRecord]] = {}
+    preserved_by_series: dict[tuple[int, str], list[AlertRecord]] = {}
     preserved_windows_kept = 0
     for impact in impacts:
         preserved = fetch_preserved_alert_records(
@@ -1176,13 +1218,16 @@ def incremental_recompute_alerts_for_endpoint(
             impact.native_event_id,
             impact.new_min_ms,
             impact.new_max_ms,
+            series_key=impact.series_key,
         )
-        preserved_by_native_event[impact.native_event_id] = preserved
+        preserved_by_series[impact.impact_key] = preserved
         preserved_windows_kept += len(preserved)
 
     events = fetch_events_for_endpoint(endpoint_id)
     affected_type_events_loaded = sum(
-        1 for event in events if event.native_event_id in affected_native_event_ids
+        1
+        for event in events
+        if (event.native_event_id, event.series_key) in affected_series_keys
     )
     new_events_queued = sum(impact.new_event_count for impact in impacts)
 
@@ -1190,15 +1235,15 @@ def incremental_recompute_alerts_for_endpoint(
         endpoint_id,
         events,
         impacts,
-        preserved_by_native_event,
+        preserved_by_series,
         method=method,
         plot=plot,
         show_progress=show_progress,
     )
-    alert_groups_total = replace_alerts_for_native_event_types(
+    alert_groups_total = replace_alerts_for_affected_series(
         endpoint_id,
         new_alerts,
-        affected_native_event_ids,
+        affected_series_keys,
     )
 
     return IncrementalAnalysisResult(

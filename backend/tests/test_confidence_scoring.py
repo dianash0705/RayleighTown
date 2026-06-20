@@ -422,3 +422,62 @@ class TestGridCorroboration:
         )
 
         assert corroborated == 95
+
+
+@pytest.mark.unit
+class TestPublishQualityGates:
+    def test_long_period_alert_with_three_matches_is_rejected(self):
+        from confidence_scoring import cap_confidence_by_match_evidence, should_publish_alert
+
+        period_ms = 3_420_000.0  # 57 minutes
+        matched = [0.0, 3_420_000.0, 6_840_000.0]
+        capped = cap_confidence_by_match_evidence(
+            86,
+            matched_count=3,
+            period_ms=period_ms,
+            ts_begin_ms=0,
+            ts_end_ms=int(7_000_000),
+            matched_timestamps=matched,
+        )
+
+        assert capped <= 42
+        assert not should_publish_alert(
+            capped,
+            events_in_window=20,
+            matched_count=3,
+            spacing_score=0.9,
+            period_ms=period_ms,
+            ts_begin_ms=0,
+            ts_end_ms=int(7_000_000),
+            matched_timestamps=matched,
+        )
+
+    def test_short_period_with_solid_matches_still_publishes(self):
+        from confidence_scoring import should_publish_alert
+
+        period_ms = 31_000.0
+        matched = [float(index * period_ms) for index in range(8)]
+        assert should_publish_alert(
+            86,
+            events_in_window=8,
+            matched_count=8,
+            spacing_score=0.95,
+            period_ms=period_ms,
+            ts_begin_ms=0,
+            ts_end_ms=int(8 * period_ms),
+            matched_timestamps=matched,
+        )
+
+    def test_sub_min_publish_period_is_rejected(self):
+        from confidence_scoring import should_publish_alert
+
+        assert not should_publish_alert(
+            95,
+            events_in_window=20,
+            matched_count=10,
+            spacing_score=0.95,
+            period_ms=1_000.0,
+            ts_begin_ms=0,
+            ts_end_ms=60_000,
+            matched_timestamps=[float(index * 1_000) for index in range(10)],
+        )

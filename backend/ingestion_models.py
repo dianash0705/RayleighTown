@@ -11,10 +11,15 @@ class NativeEventImpact:
     new_min_ms: int
     new_max_ms: int
     new_event_count: int = 0
+    series_key: str = ""
+
+    @property
+    def impact_key(self) -> tuple[int, str]:
+        return (self.native_event_id, self.series_key)
 
     def merge(self, other: NativeEventImpact) -> None:
-        if self.native_event_id != other.native_event_id:
-            raise ValueError("Cannot merge impacts for different native event ids.")
+        if self.impact_key != other.impact_key:
+            raise ValueError("Cannot merge impacts for different event series.")
         self.new_min_ms = min(self.new_min_ms, other.new_min_ms)
         self.new_max_ms = max(self.new_max_ms, other.new_max_ms)
         self.new_event_count += other.new_event_count

@@ -3,7 +3,9 @@ import math
 import pytest
 
 from event_matching import (
+    clamp_observed_period_ms,
     circular_distance_ms,
+    collapse_event_bursts,
     match_confidence_from_distance,
     match_events_to_alert,
     match_distance_ms,
@@ -207,3 +209,33 @@ class TestMatchEventsToAlert:
 
         assert len(result.matched_events) == 40
         assert result.observed_period_ms == pytest.approx(31_000.0, rel=0.02)
+
+    def test_burst_events_count_as_one_grid_match_per_slot(self):
+        period_ms = 60_000.0
+        phase_ms = 0.0
+        phase_rad = 0.0
+        base_ms = 1_000_000
+        events = [(index + 1, base_ms + offset) for index, offset in enumerate([0, 5, 10, 20, 30, 40, 50, 60])]
+        events.extend((index + 100, base_ms + 60_000 + offset) for index, offset in enumerate([0, 8, 15, 25]))
+
+        result = match_events_to_alert(
+            events,
+            ts_begin_ms=base_ms,
+            ts_end_ms=base_ms + 120_000,
+            period_ms=period_ms,
+            phase_rad=phase_rad,
+            min_confidence=25,
+            sigma_ms=500,
+        )
+
+        assert len(result.matched_events) == 2
+
+    def test_collapse_event_bursts_keeps_one_per_cluster(self):
+        events = [(index + 1, 1_000 + index * 10) for index in range(8)]
+        collapsed = collapse_event_bursts(events, burst_window_ms=100.0)
+        assert len(collapsed) == 1
+        assert collapsed[0][1] == 1_000
+
+    def test_clamp_observed_period_blocks_collapse_below_fourier_hint(self):
+        assert clamp_observed_period_ms(1_000.0, 10_000.0) == 10_000.0
+        assert clamp_observed_period_ms(31_000.0, 33_000.0) == 31_000.0

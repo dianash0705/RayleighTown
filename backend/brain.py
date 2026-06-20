@@ -26,13 +26,21 @@ from fourier import (
 )
 from config import CONFIDENCE_SCORING_CONFIG, HARMONIC_ANALYSIS_CONFIG
 from confidence_log import log_confidence_event
-from event_matching import MatchedEvent, match_events_to_alert, periods_near_match, compute_match_spacing_score
+from event_matching import (
+    MatchedEvent,
+    collapse_timestamp_bursts,
+    match_events_to_alert,
+    periods_near_match,
+    compute_match_spacing_score,
+)
+from event_series import should_skip_periodic_analysis
 from confidence_scoring import (
     ConfidenceBreakdown,
     WindowSnapshot,
     apply_evidence_penalty,
     apply_grid_corroboration,
     build_window_snapshot,
+    cap_confidence_by_match_evidence,
     compute_evidence_sufficiency_penalty,
     compute_group_confidence,
     compute_window_confidence,
@@ -50,6 +58,7 @@ class EventRecord:
     internal_event_id: int
     native_event_id: int
     timestamp_ms: int
+    series_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,7 @@ class AlertRecord:
     endpoint_id: str
     native_event_id: int
     matched_events: tuple[MatchedEvent, ...]
+    series_key: str = ""
     ts_begin: int = UNKNOWN_TIMESTAMP_MS
     ts_end: int = UNKNOWN_TIMESTAMP_MS
     period_ts: float = math.nan
@@ -113,6 +123,30 @@ def _group_logs_by_native_event(events: Iterable[EventRecord]):
     for event in events:
         grouped.setdefault(event.native_event_id, []).append(event)
     return grouped
+
+
+def _group_logs_by_series(events: Iterable[EventRecord]):
+    grouped: dict[tuple[int, str], list[EventRecord]] = {}
+    for event in events:
+        grouped.setdefault((event.native_event_id, event.series_key), []).append(event)
+    return grouped
+
+
+def _series_large_enough_for_analysis(events: list[EventRecord]) -> bool:
+    return len(events) >= CONFIDENCE_SCORING_CONFIG.min_events_for_series_analysis
+
+
+def _series_eligible_for_analysis(native_event_id: int, native_events: list[EventRecord]) -> bool:
+    if not _series_large_enough_for_analysis(native_events):
+        return False
+    series_key = native_events[0].series_key if native_events else ""
+    if should_skip_periodic_analysis(1, native_event_id, series_key=series_key):
+        return False
+    return True
+
+
+def _analysis_timestamps_ms(native_events: list[EventRecord]) -> list[int]:
+    return collapse_timestamp_bursts([event.timestamp_ms for event in native_events])
 
 
 def _is_harmonic_period(
@@ -259,6 +293,7 @@ def _merge_alert_records(left: AlertRecord, right: AlertRecord) -> AlertRecord:
         endpoint_id=primary.endpoint_id,
         native_event_id=primary.native_event_id,
         matched_events=_merge_matched_events(left.matched_events, right.matched_events),
+        series_key=primary.series_key,
         ts_begin=min(left.ts_begin, right.ts_begin),
         ts_end=max(left.ts_end, right.ts_end),
         period_ts=primary.period_ts,
@@ -728,6 +763,8 @@ def _finalize_alert_record_from_core(
     native_event_id: int,
     alert_core: AlertCore,
     candidate_events: list[tuple[int, int]],
+    *,
+    series_key: str = "",
 ) -> AlertRecord | None:
     match_result = match_events_to_alert(
         candidate_events,
@@ -770,11 +807,23 @@ def _finalize_alert_record_from_core(
         timestamps=window_timestamps,
         matched_timestamps=matched_timestamps,
     )
+    final_confidence = cap_confidence_by_match_evidence(
+        final_confidence,
+        matched_count=len(matched_events),
+        period_ms=display_period_ms,
+        ts_begin_ms=alert_core.ts_begin,
+        ts_end_ms=alert_core.ts_end,
+        matched_timestamps=matched_timestamps,
+    )
     if not should_publish_alert(
         final_confidence,
         events_in_window=len(window_timestamps),
         matched_count=len(matched_events),
         spacing_score=effective_spacing_score,
+        period_ms=display_period_ms,
+        ts_begin_ms=alert_core.ts_begin,
+        ts_end_ms=alert_core.ts_end,
+        matched_timestamps=matched_timestamps,
     ):
         logger.info(
             "Alert suppressed endpoint=%s nativeEventID=%s periodMs=%.0f "
@@ -797,6 +846,7 @@ def _finalize_alert_record_from_core(
         endpoint_id=endpoint_id,
         native_event_id=native_event_id,
         matched_events=matched_events,
+        series_key=series_key,
         ts_begin=alert_core.ts_begin,
         ts_end=alert_core.ts_end,
         period_ts=display_period_ms,
@@ -811,6 +861,8 @@ def _alert_cores_to_alert_records(
     native_events: list[EventRecord],
     alert_cores: list[AlertCore],
     seen_alert_keys: set[tuple],
+    *,
+    series_key: str = "",
 ) -> list[AlertRecord]:
     alerts: list[AlertRecord] = []
     candidate_events = [
@@ -838,12 +890,14 @@ def _alert_cores_to_alert_records(
             native_event_id,
             alert_core,
             candidate_events,
+            series_key=series_key,
         )
         if alert_record is None:
             continue
         alert_key = (
             alert_record.endpoint_id,
             alert_record.native_event_id,
+            alert_record.series_key,
             alert_record.ts_begin,
             alert_record.ts_end,
             alert_record.period_ts,
@@ -862,6 +916,7 @@ def build_alerts_for_native_event_incremental(
     native_event_id: int,
     native_events: list[EventRecord],
     *,
+    series_key: str = "",
     impact_range: tuple[int, int] | None,
     preserved_alert_records: list[AlertRecord],
     method: str = "fourier",
@@ -869,7 +924,7 @@ def build_alerts_for_native_event_incremental(
     show_progress: bool = False,
 ) -> list[AlertRecord]:
     native_events = sorted(native_events, key=lambda item: item.timestamp_ms)
-    sorted_timestamps_ms = [event.timestamp_ms for event in native_events]
+    sorted_timestamps_ms = _analysis_timestamps_ms(native_events)
     if len(sorted_timestamps_ms) < HARMONIC_ANALYSIS_CONFIG.min_events_for_alert:
         return []
 
@@ -909,6 +964,7 @@ def build_alerts_for_native_event_incremental(
         alert_key = (
             record.endpoint_id,
             record.native_event_id,
+            record.series_key,
             record.ts_begin,
             record.ts_end,
             record.period_ts,
@@ -927,6 +983,7 @@ def build_alerts_for_native_event_incremental(
                 native_events,
                 recomputed_merged,
                 seen_alert_keys,
+                series_key=series_key,
             )
         )
     return _merge_overlapping_alert_records(alerts)
@@ -936,37 +993,41 @@ def build_alerts_for_endpoint_incremental(
     endpoint_id: str,
     events: Iterable[EventRecord],
     impacts: list,
-    preserved_by_native_event: dict[int, list[AlertRecord]],
+    preserved_by_series: dict[tuple[int, str], list[AlertRecord]],
     method: str = "fourier",
     plot: bool = False,
     show_progress: bool = False,
 ) -> list[AlertRecord]:
-    grouped_by_native_event = _group_logs_by_native_event(events)
+    grouped_by_series = _group_logs_by_series(events)
     alerts: list[AlertRecord] = []
 
-    impact_by_native_event = {impact.native_event_id: impact for impact in impacts}
+    impact_by_series = {impact.impact_key: impact for impact in impacts}
 
-    native_event_items = [
-        (native_event_id, impact_by_native_event[native_event_id])
-        for native_event_id in impact_by_native_event
-        if native_event_id in grouped_by_native_event
+    series_items = [
+        (series_key, impact_by_series[series_key])
+        for series_key in impact_by_series
+        if series_key in grouped_by_series
     ]
     if show_progress:
-        native_event_items = tqdm(
-            native_event_items,
+        series_items = tqdm(
+            series_items,
             desc=f"Processing endpoint {endpoint_id}",
-            unit="event group",
+            unit="event series",
         )
 
-    for native_event_id, impact in native_event_items:
-        native_events = grouped_by_native_event[native_event_id]
+    for series_key, impact in series_items:
+        native_event_id, series_identity_key = series_key
+        native_events = grouped_by_series[series_key]
+        if not _series_eligible_for_analysis(native_event_id, native_events):
+            continue
         impact_range = (impact.new_min_ms, impact.new_max_ms)
-        preserved_records = preserved_by_native_event.get(native_event_id, [])
+        preserved_records = preserved_by_series.get(series_key, [])
         alerts.extend(
             build_alerts_for_native_event_incremental(
                 endpoint_id,
                 native_event_id,
                 native_events,
+                series_key=series_identity_key,
                 impact_range=impact_range,
                 preserved_alert_records=preserved_records,
                 method=method,
@@ -985,21 +1046,23 @@ def build_alerts_for_endpoint(
     plot: bool = False,
     show_progress: bool = False,
 ) -> list[AlertRecord]:
-    grouped_by_native_event = _group_logs_by_native_event(events)
+    grouped_by_series = _group_logs_by_series(events)
     alerts = []
     seen_alert_keys: set[tuple] = set()
 
-    native_event_items = grouped_by_native_event.items()
+    native_event_items = grouped_by_series.items()
     if show_progress:
         native_event_items = tqdm(
             native_event_items,
             desc=f"Processing endpoint {endpoint_id}",
-            unit="event group",
+            unit="event series",
         )
 
-    for native_event_id, native_events in native_event_items:
+    for (native_event_id, series_key), native_events in native_event_items:
+        if not _series_eligible_for_analysis(native_event_id, native_events):
+            continue
         native_events = sorted(native_events, key=lambda item: item.timestamp_ms)
-        sorted_timestamps_ms = [event.timestamp_ms for event in native_events]
+        sorted_timestamps_ms = _analysis_timestamps_ms(native_events)
         alert_cores = build_alerts_from_sorted_timestamps_ms(
             sorted_timestamps_ms,
             endpoint_id=endpoint_id,
@@ -1036,12 +1099,14 @@ def build_alerts_for_endpoint(
                 native_event_id,
                 alert_core,
                 candidate_events,
+                series_key=series_key,
             )
             if alert_record is None:
                 continue
             alert_key = (
                 alert_record.endpoint_id,
                 alert_record.native_event_id,
+                alert_record.series_key,
                 alert_record.ts_begin,
                 alert_record.ts_end,
                 alert_record.period_ts,

@@ -86,9 +86,9 @@ def test_analysis_queue_merges_jobs_for_same_endpoint():
     jobs = queue._drain()
     assert len(jobs) == 1
     job = jobs[0]
-    assert set(job.impacts) == {4624, 4688}
-    assert job.impacts[4624].new_min_ms == 1_000
-    assert job.impacts[4624].new_max_ms == 4_000
+    assert set(job.impacts) == {(4624, ""), (4688, "")}
+    assert job.impacts[(4624, "")].new_min_ms == 1_000
+    assert job.impacts[(4624, "")].new_max_ms == 4_000
 
 
 def test_incremental_recompute_only_touches_affected_event_type(temp_db):

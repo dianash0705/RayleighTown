@@ -252,15 +252,18 @@ function renderTopEndpoints(endpoints) {
   );
 }
 
-async function loadDashboard() {
-  if (window.PageStatus) {
-    PageStatus.showLoading(statusEl, "Loading dashboard...");
-  } else {
-    statusEl.textContent = "Loading dashboard...";
+async function loadDashboard(options = {}) {
+  const silent = options.silent === true;
+  if (!silent) {
+    if (window.PageStatus) {
+      PageStatus.showLoading(statusEl, "Loading dashboard...");
+    } else {
+      statusEl.textContent = "Loading dashboard...";
+    }
+    summaryWidgets.hidden = true;
+    recentAlertsWidget.hidden = true;
+    mainWidgets.hidden = true;
   }
-  summaryWidgets.hidden = true;
-  recentAlertsWidget.hidden = true;
-  mainWidgets.hidden = true;
 
   try {
     const query = timeRangeControls ? "?" + timeRangeControls.buildQueryParams().toString() : "";
@@ -268,18 +271,22 @@ async function loadDashboard() {
     const data = await response.json();
 
     if (!response.ok) {
-      if (window.PageStatus) {
-        PageStatus.showError(statusEl, data.error || "Failed to load dashboard");
-      } else {
-        statusEl.textContent = data.error || "Failed to load dashboard";
+      if (!silent) {
+        if (window.PageStatus) {
+          PageStatus.showError(statusEl, data.error || "Failed to load dashboard");
+        } else {
+          statusEl.textContent = data.error || "Failed to load dashboard";
+        }
       }
       return;
     }
 
-    if (window.PageStatus) {
-      PageStatus.clear(statusEl);
-    } else {
-      statusEl.textContent = "";
+    if (!silent) {
+      if (window.PageStatus) {
+        PageStatus.clear(statusEl);
+      } else {
+        statusEl.textContent = "";
+      }
     }
     updateRangeLabels(timeRangeControls ? timeRangeControls.getLabel() : "Last week");
     if (recentAlertsViewAll) {
@@ -292,12 +299,21 @@ async function loadDashboard() {
     renderTopEndpoints(data.topEndpoints || []);
     mainWidgets.hidden = false;
   } catch (error) {
-    if (window.PageStatus) {
-      PageStatus.showError(statusEl, "Network error while loading dashboard.");
-    } else {
-      statusEl.textContent = "Network error while loading dashboard";
+    if (!silent) {
+      if (window.PageStatus) {
+        PageStatus.showError(statusEl, "Network error while loading dashboard.");
+      } else {
+        statusEl.textContent = "Network error while loading dashboard";
+      }
     }
   }
 }
+
+const DASHBOARD_REFRESH_MS = 60_000;
+setInterval(function () {
+  if (document.visibilityState === "visible") {
+    loadDashboard({ silent: true });
+  }
+}, DASHBOARD_REFRESH_MS);
 
 loadDashboard();

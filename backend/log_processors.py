@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from agent_event_filter import is_agent_generated_event
 from event_parsers import parse_event_details
 from event_parsers.common import extract_endpoint_agent_metadata, normalize_payload
 
@@ -46,8 +47,10 @@ def _build_ingested_event(
     native_event_id: int,
     timestamp_ms: int,
     record: dict[str, Any],
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     parsed_details = parse_event_details(log_id, native_event_id, record)
+    if is_agent_generated_event(log_id, native_event_id, record, parsed_details):
+        return None
     agent_hostname, agent_ip = extract_endpoint_agent_metadata(record)
     return {
         "timestamp_ms": timestamp_ms,
@@ -187,14 +190,16 @@ def _extract_json_events(log_path: Path, event_id_whitelist, log_id: int):
             except ValueError:
                 continue
 
-            events.append(
-                _build_ingested_event(
-                    log_id=log_id,
-                    native_event_id=native_event_id,
-                    timestamp_ms=timestamp_ms,
-                    record=record,
-                )
+            built_event = _build_ingested_event(
+                log_id=log_id,
+                native_event_id=native_event_id,
+                timestamp_ms=timestamp_ms,
+                record=record,
             )
+            if built_event is None:
+                continue
+
+            events.append(built_event)
 
     if file_size >= LARGE_FILE_PROGRESS_BYTES:
         elapsed = time.monotonic() - started_at
@@ -260,14 +265,15 @@ def extract_windows_evtx_events(log_path: Path, event_id_whitelist, log_id: int 
             continue
 
         payload = _evtx_to_payload(root)
-        events.append(
-            _build_ingested_event(
-                log_id=log_id,
-                native_event_id=native_event_id,
-                timestamp_ms=timestamp_ms,
-                record=payload,
-            )
+        built_event = _build_ingested_event(
+            log_id=log_id,
+            native_event_id=native_event_id,
+            timestamp_ms=timestamp_ms,
+            record=payload,
         )
+        if built_event is None:
+            continue
+        events.append(built_event)
 
     return events
 

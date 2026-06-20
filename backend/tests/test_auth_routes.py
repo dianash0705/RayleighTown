@@ -126,6 +126,9 @@ def test_register_endpoint_and_upload_auth(client):
     endpoint = created.get_json()["endpoint"]
     assert endpoint["secret"]
 
+    missing_name = client.post("/api/admin/endpoints", json={"name": "   "})
+    assert missing_name.status_code == 400
+
     # Upload without a secret is rejected up front.
     no_secret = client.post("/api/logs/upload", data={"endpointID": endpoint["endpointID"]})
     assert no_secret.status_code == 401

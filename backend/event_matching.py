@@ -176,6 +176,24 @@ def refine_matching_period_ms(
     return period_ms
 
 
+def clamp_observed_period_ms(observed_ms: float, fourier_hint_ms: float) -> float:
+    """
+    Prevent post-match period refinement from collapsing far below the Fourier hint.
+
+    Allows modest nudges (e.g. 33s -> 31s) but blocks 10s -> 1s style garbage.
+    """
+    config = EVENT_MATCHING_CONFIG
+    if not math.isfinite(observed_ms) or observed_ms <= 0:
+        return fourier_hint_ms
+    if not math.isfinite(fourier_hint_ms) or fourier_hint_ms <= 0:
+        return observed_ms
+
+    floor_ms = fourier_hint_ms * (1.0 - config.period_refinement_max_ratio_delta)
+    if observed_ms < floor_ms:
+        return fourier_hint_ms
+    return observed_ms
+
+
 def estimate_series_period_and_anchor_ms(
     timestamps: list[int],
     hint_period_ms: float,
@@ -207,6 +225,73 @@ def estimate_series_period_and_anchor_ms(
     return period_ms, anchor_ms
 
 
+def grid_cycle_index(timestamp_ms: float, period_ms: float, anchor_ms: float) -> int:
+    """Index of the periodic grid slot nearest to ``timestamp_ms``."""
+    if period_ms <= 0:
+        return 0
+    return round((timestamp_ms - anchor_ms) / period_ms)
+
+
+def collapse_event_bursts(
+    events: list[tuple[int, int]],
+    burst_window_ms: float | None = None,
+) -> list[tuple[int, int]]:
+    """Keep one event per tight burst cluster (events within ``burst_window_ms``)."""
+    config = EVENT_MATCHING_CONFIG
+    window_ms = config.burst_collapse_ms if burst_window_ms is None else burst_window_ms
+    if not events or window_ms <= 0:
+        return events
+
+    collapsed: list[tuple[int, int]] = []
+    cluster_start_ms: int | None = None
+    cluster_event: tuple[int, int] | None = None
+    for internal_event_id, timestamp_ms in sorted(events, key=lambda item: (item[1], item[0])):
+        if cluster_start_ms is None or timestamp_ms - cluster_start_ms > window_ms:
+            if cluster_event is not None:
+                collapsed.append(cluster_event)
+            cluster_start_ms = timestamp_ms
+            cluster_event = (internal_event_id, timestamp_ms)
+    if cluster_event is not None:
+        collapsed.append(cluster_event)
+    return collapsed
+
+
+def collapse_timestamp_bursts(
+    timestamps: list[int],
+    burst_window_ms: float | None = None,
+) -> list[int]:
+    """Collapse near-simultaneous timestamps for Fourier / spacing analysis."""
+    if not timestamps:
+        return []
+    indexed = [(index, timestamp_ms) for index, timestamp_ms in enumerate(timestamps)]
+    collapsed = collapse_event_bursts(indexed, burst_window_ms=burst_window_ms)
+    return sorted(timestamp_ms for _, timestamp_ms in collapsed)
+
+
+def dedupe_events_to_one_per_grid_slot(
+    events: list[tuple[int, int]],
+    *,
+    period_ms: float,
+    anchor_ms: float,
+) -> list[tuple[int, int]]:
+    """Keep the closest-to-tick event for each periodic grid slot."""
+    if not events or period_ms <= 0:
+        return events
+
+    best_by_slot: dict[int, tuple[int, int, float]] = {}
+    for internal_event_id, timestamp_ms in events:
+        slot = grid_cycle_index(float(timestamp_ms), period_ms, anchor_ms)
+        distance_ms = nearest_tick_distance_ms(float(timestamp_ms), period_ms, anchor_ms)
+        existing = best_by_slot.get(slot)
+        if existing is None or distance_ms < existing[2]:
+            best_by_slot[slot] = (internal_event_id, timestamp_ms, distance_ms)
+
+    return sorted(
+        ((internal_event_id, timestamp_ms) for internal_event_id, timestamp_ms, _ in best_by_slot.values()),
+        key=lambda item: (item[1], item[0]),
+    )
+
+
 def _score_events_in_window(
     in_window: list[tuple[int, int]],
     *,
@@ -217,8 +302,13 @@ def _score_events_in_window(
 ) -> tuple[MatchedEvent, ...]:
     matched: list[MatchedEvent] = []
     prior_timestamps: list[float] = []
+    candidates = dedupe_events_to_one_per_grid_slot(
+        in_window,
+        period_ms=period_ms,
+        anchor_ms=anchor_ms,
+    )
 
-    for internal_event_id, timestamp_ms in sorted(in_window, key=lambda item: (item[1], item[0])):
+    for internal_event_id, timestamp_ms in candidates:
         distance_ms = match_distance_ms(
             float(timestamp_ms),
             period_ms=period_ms,
@@ -278,10 +368,17 @@ def match_events_to_alert(
     if not in_window:
         return AlertMatchResult((), period_ms, phase_rad)
 
+    if config.burst_collapse_ms > 0:
+        in_window = collapse_event_bursts(in_window)
+
+    fourier_period_ms = period_ms
     in_window_timestamps = [timestamp_ms for _, timestamp_ms in in_window]
-    hint_period_ms = refine_matching_period_ms(in_window_timestamps, period_ms)
+    hint_period_ms = clamp_observed_period_ms(
+        refine_matching_period_ms(in_window_timestamps, fourier_period_ms),
+        fourier_period_ms,
+    )
     if len(in_window_timestamps) >= 2:
-        hint_period_ms, hint_anchor_ms = estimate_series_period_and_anchor_ms(
+        _, hint_anchor_ms = estimate_series_period_and_anchor_ms(
             in_window_timestamps,
             hint_period_ms,
         )
@@ -307,6 +404,7 @@ def match_events_to_alert(
             [item.timestamp_ms for item in first_pass],
             hint_period_ms,
         )
+        observed_period_ms = clamp_observed_period_ms(observed_period_ms, fourier_period_ms)
 
     if len(first_pass) >= config.min_observed_matches_for_period_override:
         matched = _score_events_in_window(

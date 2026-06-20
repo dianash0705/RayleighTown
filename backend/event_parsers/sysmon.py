@@ -37,6 +37,7 @@ def parse_sysmon_network_connection(record: dict) -> dict:
     source_ip = payload_value(payload, "SourceIp") or data.get("SourceIp")
     destination_ip = payload_value(payload, "DestinationIp") or data.get("DestinationIp")
     destination_port = payload_value(payload, "DestinationPort") or data.get("DestinationPort")
+    destination_hostname = payload_value(payload, "DestinationHostname") or data.get("DestinationHostname")
     source_port = payload_value(payload, "SourcePort") or data.get("SourcePort")
     protocol = payload_value(payload, "Protocol") or data.get("Protocol")
     image = payload_value(payload, "Image") or data.get("Image")
@@ -46,6 +47,7 @@ def parse_sysmon_network_connection(record: dict) -> dict:
         field("sourceIp", "Source IP", source_ip, emphasis=True),
         field("destinationIp", "Destination IP", destination_ip, emphasis=True),
         field("destinationPort", "Destination Port", destination_port),
+        field("destinationHostname", "Destination Hostname", destination_hostname),
         field("sourcePort", "Source Port", source_port),
         field("protocol", "Protocol", protocol),
         field("image", "Process", image),
@@ -57,6 +59,8 @@ def parse_sysmon_network_connection(record: dict) -> dict:
             "sourceIp": source_ip,
             "destinationIp": destination_ip,
             "destinationPort": destination_port,
+            "destinationHostname": destination_hostname,
+            "sourcePort": source_port,
             "protocol": protocol,
             "image": image,
         }.items()
