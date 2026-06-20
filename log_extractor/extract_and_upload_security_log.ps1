@@ -196,8 +196,20 @@ function Register-LogUploadScheduledTask {
     }
 
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ($argumentList -join " ")
+
+    # Task Scheduler caps RepetitionDuration (~31 days). TimeSpan::MaxValue becomes invalid XML.
+    # Daily trigger + 24h repetition (via CIM) runs every N minutes indefinitely.
     $startAt = (Get-Date).AddMinutes(1)
-    $trigger = New-ScheduledTaskTrigger -Once -At $startAt -RepetitionInterval (New-TimeSpan -Minutes $ScheduleIntervalMinutes) -RepetitionDuration ([TimeSpan]::MaxValue)
+    $trigger = New-ScheduledTaskTrigger -Daily -At $startAt
+    $trigger.Repetition = New-CimInstance -ClientOnly `
+        -Namespace "Root/Microsoft/Windows/TaskScheduler" `
+        -ClassName MSFT_TaskRepetitionPattern `
+        -Property @{
+            Interval = "PT${ScheduleIntervalMinutes}M"
+            Duration = "P1D"
+            StopAtDurationEnd = $false
+        }
+
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
