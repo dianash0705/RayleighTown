@@ -39,6 +39,7 @@ from confidence_scoring import (
     WindowSnapshot,
     apply_evidence_penalty,
     apply_grid_corroboration,
+    apply_in_window_consistency_bonus,
     build_window_snapshot,
     cap_confidence_by_match_evidence,
     compute_evidence_sufficiency_penalty,
@@ -813,6 +814,15 @@ def _finalize_alert_record_from_core(
         period_ms=display_period_ms,
         ts_begin_ms=alert_core.ts_begin,
         ts_end_ms=alert_core.ts_end,
+        matched_timestamps=matched_timestamps,
+    )
+    final_confidence = apply_in_window_consistency_bonus(
+        final_confidence,
+        matched_count=len(matched_events),
+        period_ms=display_period_ms,
+        ts_begin_ms=alert_core.ts_begin,
+        ts_end_ms=alert_core.ts_end,
+        match_spacing_score=match_spacing_score,
         matched_timestamps=matched_timestamps,
     )
     if not should_publish_alert(

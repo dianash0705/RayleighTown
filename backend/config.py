@@ -166,7 +166,7 @@ class ConfidenceScoringConfig:
 	min_publish_confidence: int = 22
 	max_evidence_penalty: float = 50.0
 	min_evidence_density_ratio: float = 0.15
-	# When grid matching is thin, still allow publish if spacing strongly supports the period.
+	# Spacing score still feeds evidence/corroboration; publish requires grid matches.
 	min_spacing_score_for_publish: float = 0.62
 	# Weak Fourier windows can still publish when grid matching corroborates cadence.
 	min_publish_confidence_with_grid_matches: int = 18
@@ -176,6 +176,16 @@ class ConfidenceScoringConfig:
 	grid_corroboration_window_conf_threshold: int = 25
 	min_median_gap_fit_for_corroboration: float = 0.35
 	max_grid_corroborated_confidence: int = 62
+	# In-window consistency: reward dense grid hits over the alert span (period-agnostic).
+	min_matched_for_consistency_bonus: int = 8
+	min_in_window_consistency_score: float = 0.55
+	max_in_window_consistency_bonus: float = 32.0
+	max_in_window_consistency_confidence: int = 94
+	in_window_consistency_coverage_weight: float = 0.38
+	in_window_consistency_spacing_weight: float = 0.32
+	in_window_consistency_gap_fit_weight: float = 0.20
+	in_window_consistency_volume_weight: float = 0.10
+	in_window_consistency_volume_saturation: int = 24
 	# Publish quality gates beyond raw match count.
 	long_period_publish_threshold_ms: float = 300_000.0
 	min_matched_events_for_long_period_publish: int = 6

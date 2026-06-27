@@ -258,6 +258,34 @@ class TestEvidenceSufficiency:
             spacing_score=0.1,
         )
 
+    def test_two_grid_matches_with_strong_spacing_do_not_publish(self):
+        from confidence_scoring import cap_confidence_by_match_evidence, should_publish_alert
+
+        period_ms = 38_333.0
+        ts_begin_ms = 0
+        ts_end_ms = 600_000
+        matched = [299_987.0, 338_320.0]
+        capped = cap_confidence_by_match_evidence(
+            72,
+            matched_count=2,
+            period_ms=period_ms,
+            ts_begin_ms=ts_begin_ms,
+            ts_end_ms=ts_end_ms,
+            matched_timestamps=matched,
+        )
+
+        assert capped == 42
+        assert not should_publish_alert(
+            capped,
+            events_in_window=6,
+            matched_count=2,
+            spacing_score=0.95,
+            period_ms=period_ms,
+            ts_begin_ms=ts_begin_ms,
+            ts_end_ms=ts_end_ms,
+            matched_timestamps=matched,
+        )
+
     def test_dense_periodic_window_passes_publish_gate(self):
         from confidence_scoring import compute_evidence_sufficiency_penalty, should_publish_alert
 
@@ -422,6 +450,97 @@ class TestGridCorroboration:
         )
 
         assert corroborated == 95
+
+
+@pytest.mark.unit
+class TestInWindowConsistencyBonus:
+    def _six_hour_span(self) -> tuple[int, int]:
+        span_ms = 6 * 60 * 60_000
+        return 0, span_ms
+
+    def test_dense_five_minute_series_scores_higher_than_sparse_hourly(self):
+        from confidence_scoring import (
+            apply_in_window_consistency_bonus,
+            compute_in_window_consistency_score,
+        )
+
+        ts_begin_ms, ts_end_ms = self._six_hour_span()
+        period_5m = 300_000.0
+        matched_5m = [float(index * period_5m) for index in range(72)]
+        period_1h = 3_600_000.0
+        matched_1h = [float(index * period_1h) for index in range(6)]
+
+        score_5m = compute_in_window_consistency_score(
+            matched_count=len(matched_5m),
+            period_ms=period_5m,
+            ts_begin_ms=ts_begin_ms,
+            ts_end_ms=ts_end_ms,
+            match_spacing_score=0.95,
+            matched_timestamps=matched_5m,
+        )
+        score_1h = compute_in_window_consistency_score(
+            matched_count=len(matched_1h),
+            period_ms=period_1h,
+            ts_begin_ms=ts_begin_ms,
+            ts_end_ms=ts_end_ms,
+            match_spacing_score=0.92,
+            matched_timestamps=matched_1h,
+        )
+
+        assert score_5m > score_1h
+        boosted_5m = apply_in_window_consistency_bonus(
+            62,
+            matched_count=len(matched_5m),
+            period_ms=period_5m,
+            ts_begin_ms=ts_begin_ms,
+            ts_end_ms=ts_end_ms,
+            match_spacing_score=0.95,
+            matched_timestamps=matched_5m,
+        )
+        boosted_1h = apply_in_window_consistency_bonus(
+            62,
+            matched_count=len(matched_1h),
+            period_ms=period_1h,
+            ts_begin_ms=ts_begin_ms,
+            ts_end_ms=ts_end_ms,
+            match_spacing_score=0.92,
+            matched_timestamps=matched_1h,
+        )
+
+        assert boosted_5m > boosted_1h
+        assert boosted_5m >= 88
+        assert boosted_1h <= 85
+
+    def test_sparse_matches_get_no_bonus(self):
+        from confidence_scoring import apply_in_window_consistency_bonus
+
+        period_ms = 38_333.0
+        matched = [299_987.0, 338_320.0]
+        assert apply_in_window_consistency_bonus(
+            42,
+            matched_count=2,
+            period_ms=period_ms,
+            ts_begin_ms=0,
+            ts_end_ms=600_000,
+            match_spacing_score=0.95,
+            matched_timestamps=matched,
+        ) == 42
+
+    def test_high_confidence_is_not_capped_down(self):
+        from confidence_scoring import apply_in_window_consistency_bonus
+
+        ts_begin_ms, ts_end_ms = self._six_hour_span()
+        period_ms = 31_139.0
+        matched = [float(index * period_ms) for index in range(200)]
+        assert apply_in_window_consistency_bonus(
+            100,
+            matched_count=len(matched),
+            period_ms=period_ms,
+            ts_begin_ms=ts_begin_ms,
+            ts_end_ms=ts_end_ms,
+            match_spacing_score=0.95,
+            matched_timestamps=matched,
+        ) == 100
 
 
 @pytest.mark.unit

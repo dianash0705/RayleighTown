@@ -3,7 +3,8 @@ const summaryWidgets = document.getElementById("summaryWidgets");
 const mainWidgets = document.getElementById("mainWidgets");
 const chartWidget = document.getElementById("chartWidget");
 const listsWidget = document.getElementById("listsWidget");
-const statActiveNow = document.getElementById("statActiveNow");
+const statRecentActivity = document.getElementById("statRecentActivity");
+const statRecentActivityCaption = document.getElementById("statRecentActivityCaption");
 const statActive24h = document.getElementById("statActive24h");
 const statActiveWeek = document.getElementById("statActiveWeek");
 const statHighConfidence = document.getElementById("statHighConfidence");
@@ -37,7 +38,12 @@ function escapeHtml(value) {
 }
 
 function renderSummary(summary) {
-  statActiveNow.textContent = String(summary.activeNow ?? 0);
+  const recentHours = summary.recentActivityHours ?? 6;
+  statRecentActivity.textContent = String(summary.recentActivity ?? 0);
+  if (statRecentActivityCaption) {
+    statRecentActivityCaption.textContent =
+      "Alerts with last event in the past " + recentHours + " hour" + (recentHours === 1 ? "" : "s");
+  }
   statActive24h.textContent = String(summary.activeLast24h ?? 0);
   statActiveWeek.textContent = String(summary.activeInWindow ?? summary.activeLastWeek ?? 0);
   statHighConfidence.textContent = String(summary.highConfidenceInWindow ?? summary.highConfidenceLastWeek ?? 0);

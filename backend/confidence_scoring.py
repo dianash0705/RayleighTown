@@ -10,6 +10,10 @@ This module scores alerts in two layers:
 2. **Group score** — computed when overlapping window detections with matching
    period are merged. Rewards repeated and consecutive sightings.
 
+3. **In-window consistency bonus** — applied at publish time from grid-match
+   coverage, spacing fit, and match volume over the alert span. Lifts dense
+   short-period series without replacing multi-window corroboration.
+
 All weights and caps live in ``ConfidenceScoringConfig`` (``config.py``).
 
 Window formula (documented for tuning discussions)
@@ -700,6 +704,103 @@ def apply_grid_corroboration(
     return max(confidence, corroborated)
 
 
+def compute_in_window_consistency_score(
+    *,
+    matched_count: int,
+    period_ms: float,
+    ts_begin_ms: int,
+    ts_end_ms: int,
+    match_spacing_score: float,
+    matched_timestamps: list[float],
+) -> float:
+    """
+    Period-agnostic measure of how consistently events hit the periodic grid.
+
+    Combines slot coverage (matched / expected ticks), grid spacing quality,
+    median gap fit among matched events, and absolute match volume. Short-period
+    dense series (e.g. 72 hits in 6 h) score higher than sparse long-period
+    series (e.g. 6 hits in 6 h) at the same Fourier window count.
+    """
+    from fourier import compute_period_median_gap_fit
+
+    scoring = CONFIDENCE_SCORING_CONFIG
+    if matched_count < scoring.min_matched_for_consistency_bonus:
+        return 0.0
+    if not math.isfinite(period_ms) or period_ms <= 0:
+        return 0.0
+
+    window_span_ms = max(0, int(ts_end_ms) - int(ts_begin_ms))
+    if window_span_ms <= 0:
+        return 0.0
+
+    expected_ticks = max(1.0, (window_span_ms / period_ms) + 1.0)
+    coverage = min(1.0, matched_count / expected_ticks)
+    spacing = max(0.0, min(1.0, match_spacing_score))
+    median_gap_fit = 0.0
+    if matched_timestamps and len(matched_timestamps) >= 2:
+        median_gap_fit = max(
+            0.0,
+            min(1.0, compute_period_median_gap_fit(period_ms, matched_timestamps)),
+        )
+
+    saturation = max(2, scoring.in_window_consistency_volume_saturation)
+    volume = min(
+        1.0,
+        math.log2(1.0 + matched_count) / math.log2(1.0 + saturation),
+    )
+
+    return _clamp(
+        scoring.in_window_consistency_coverage_weight * coverage
+        + scoring.in_window_consistency_spacing_weight * spacing
+        + scoring.in_window_consistency_gap_fit_weight * median_gap_fit
+        + scoring.in_window_consistency_volume_weight * volume,
+        0.0,
+        1.0,
+    )
+
+
+def apply_in_window_consistency_bonus(
+    confidence: int,
+    *,
+    matched_count: int,
+    period_ms: float,
+    ts_begin_ms: int,
+    ts_end_ms: int,
+    match_spacing_score: float,
+    matched_timestamps: list[float],
+) -> int:
+    """
+    Lift confidence when grid matching shows sustained in-window periodicity.
+
+    Complements multi-window Fourier merge: independent windows remain the
+    strongest corroboration path, but extreme in-window consistency (many
+    consecutive grid hits) can raise confidence without waiting for span to
+    exceed the analysis window size.
+    """
+    scoring = CONFIDENCE_SCORING_CONFIG
+    consistency = compute_in_window_consistency_score(
+        matched_count=matched_count,
+        period_ms=period_ms,
+        ts_begin_ms=ts_begin_ms,
+        ts_end_ms=ts_end_ms,
+        match_spacing_score=match_spacing_score,
+        matched_timestamps=matched_timestamps,
+    )
+    if consistency < scoring.min_in_window_consistency_score:
+        return confidence
+
+    gate = max(1e-6, 1.0 - scoring.min_in_window_consistency_score)
+    bonus = scoring.max_in_window_consistency_bonus * (
+        (consistency - scoring.min_in_window_consistency_score) / gate
+    )
+    capped_boost = min(
+        float(confidence) + bonus,
+        float(scoring.max_in_window_consistency_confidence),
+    )
+    # Only lift sub-cap scores; never pull down multi-window / strong Fourier results.
+    return _round_confidence(max(float(confidence), capped_boost))
+
+
 def cap_confidence_by_match_evidence(
     confidence: int,
     *,
@@ -763,8 +864,7 @@ def should_publish_alert(
     if events_in_window < scoring.min_matched_events_for_publish:
         return False
     if matched_count < scoring.min_matched_events_for_publish:
-        if not (matched_count >= 1 and spacing_score >= scoring.min_spacing_score_for_publish):
-            return False
+        return False
 
     if (
         period_ms is not None
@@ -802,11 +902,7 @@ def should_publish_alert(
         )
     if confidence < min_confidence:
         return False
-    if matched_count >= scoring.min_matched_events_for_publish:
-        return True
-    if matched_count >= 1 and spacing_score >= scoring.min_spacing_score_for_publish:
-        return True
-    return False
+    return matched_count >= scoring.min_matched_events_for_publish
 
 
 def build_window_snapshot(

@@ -1720,6 +1720,25 @@ def fetch_entities(
     }
 
 
+def _count_alerts_with_last_event_since(
+    cursor,
+    since_ms: int,
+    organization_id: int | None = None,
+) -> int:
+    """Alerts whose last observed event (tsEnd) is at or after since_ms."""
+    org_clause, org_params = _org_filter_sql("endpointID", organization_id)
+    cursor.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM alertGroups
+        WHERE tsEnd >= ?{org_clause}
+        """,
+        (since_ms, *org_params),
+    )
+    row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
 def _count_overlapping_alert_groups(
     cursor,
     window_start_ms: int,
@@ -1754,7 +1773,13 @@ def fetch_dashboard_stats(
     cursor = conn.cursor()
     effective_start_ms, effective_end_ms = _effective_query_window(cursor, window_start_ms, window_end_ms, now_ms)
 
-    active_now = _count_overlapping_alert_groups(cursor, now_ms, now_ms, organization_id)
+    recent_activity_hours = 6
+    recent_activity_start_ms = int((now - timedelta(hours=recent_activity_hours)).timestamp() * 1000)
+    recent_activity = _count_alerts_with_last_event_since(
+        cursor,
+        recent_activity_start_ms,
+        organization_id,
+    )
     active_last_24h = _count_overlapping_alert_groups(cursor, last_24h_start_ms, now_ms, organization_id)
     active_in_window = _count_overlapping_alert_groups(cursor, effective_start_ms, effective_end_ms, organization_id)
 
@@ -1871,7 +1896,8 @@ def fetch_dashboard_stats(
         "windowEnd": effective_end_ms,
         "timePreset": time_preset,
         "summary": {
-            "activeNow": active_now,
+            "recentActivity": recent_activity,
+            "recentActivityHours": recent_activity_hours,
             "activeLast24h": active_last_24h,
             "activeLastWeek": active_in_window,
             "activeInWindow": active_in_window,
