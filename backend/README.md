@@ -61,6 +61,31 @@ That page loads the alerts viewer from `backend/static/index.html` with `style.c
 python run_brain.py --endpointID 123
 ```
 
+## Seed test data quickly
+
+Load the repo's bundled sample Security and Sysmon logs into the database and rebuild alerts for a test endpoint:
+
+```bash
+python seed_relevant_events.py
+```
+
+By default this also adds a synthetic parser showcase that covers every supported Security and Sysmon parser, with enough repeated events per type to produce alerts for the fields we humanized.
+
+By default this creates or reuses `Seed Test Organization` and attaches the seeded endpoint to it.
+
+By default this uses:
+
+- `logs/aptsimulator_cobaltstrike/aptsimulator_cobaltstrike_2021-06-11T21081492.json` for Sysmon (`logID=1`)
+- `logs/JPCERT/Security.evtx` for Windows Security (`logID=0`)
+
+Useful flags:
+
+- `--organization <name>` to choose the organization to attach the endpoint to
+- `--endpoint-id <id>` to choose the target endpoint
+- `--display-name <name>` to set the endpoint label
+- `--keep-existing` to append instead of clearing prior rows for that endpoint
+- `--no-alert-rebuild` to skip the brain step after seeding
+
 ## Demo shortcut (from repository root)
 
 ```powershell

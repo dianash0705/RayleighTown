@@ -2,13 +2,17 @@ from event_details import compact_fields, field, make_event_details
 from event_parsers.common import event_data_map, normalize_payload, payload_value
 
 
-def _security_fields(payload: dict, mapping: list[tuple[str, str, bool]]) -> tuple[list, dict]:
+def _security_fields(
+    payload: dict,
+    mapping: list[tuple[str, str, bool]],
+    event_type: str | None = None,
+) -> tuple[list, dict]:
     data = event_data_map(payload)
     fields = []
     identity: dict[str, str] = {}
     for key, label, emphasis in mapping:
         value = payload_value(payload, key) or data.get(key)
-        parsed = field(key, label, value, emphasis=emphasis)
+        parsed = field(key, label, value, emphasis=emphasis, event_type=event_type)
         if parsed:
             fields.append(parsed)
             identity[key] = str(value).strip()
@@ -140,6 +144,7 @@ def parse_security_firewall_rule(record: dict) -> dict:
             ("Direction", "Direction", False),
             ("Application", "Application", False),
         ],
+        event_type="Windows Firewall Rule Changed",
     )
     return make_event_details("Windows Firewall Rule Changed", fields, identity)
 
