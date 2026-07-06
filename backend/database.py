@@ -4,6 +4,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 from alert_filters import AlertQueryFilters, apply_filter_rules
+from alert_whitelist import filter_alerts_against_whitelist, is_alert_whitelisted
 from auth import (
     generate_endpoint_id,
     generate_endpoint_secret,
@@ -201,6 +202,30 @@ def init_db():
         )
         """
     )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS alertWhitelist (
+            whitelistID INTEGER PRIMARY KEY AUTOINCREMENT,
+            organizationID INTEGER NOT NULL,
+            endpointID TEXT,
+            logID INTEGER,
+            nativeEventID INTEGER NOT NULL,
+            seriesKey TEXT NOT NULL DEFAULT '',
+            periodMs REAL,
+            note TEXT NOT NULL DEFAULT '',
+            seriesIdentityJson TEXT NOT NULL DEFAULT '{}',
+            createdByAccountID INTEGER,
+            createdAt INTEGER NOT NULL,
+            updatedAt INTEGER NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_alert_whitelist_org
+        ON alertWhitelist(organizationID, nativeEventID)
+        """
+    )
 
     _ensure_column(cursor=conn.cursor(), table_name="endpoints", column_definition="organizationID INTEGER")
     _ensure_column(cursor=conn.cursor(), table_name="endpoints", column_definition="displayName TEXT")
@@ -256,6 +281,9 @@ def get_organization_by_id(organization_id: int) -> dict | None:
 
 
 def get_organization_by_name(name: str) -> dict | None:
+    name = (name or "").strip()
+    if not name:
+        return None
     conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
@@ -288,25 +316,60 @@ def get_account_by_id(account_id: int) -> dict | None:
 
 def authenticate_account(organization_name: str, account_name: str, password: str) -> dict | None:
     """Return the account dict when the org/username/password triple is valid."""
+    result = attempt_login(organization_name, account_name, password)
+    return result.get("account")
+
+
+def attempt_login(organization_name: str, account_name: str, password: str) -> dict:
+    """Validate login credentials with specific failure reasons.
+
+    Returns ``{"account": dict}`` on success, or
+    ``{"error": str, "code": str, "status": int}`` on failure.
+    """
+    organization_name = (organization_name or "").strip()
+    account_name = (account_name or "").strip()
+    password = password or ""
+    if not organization_name or not account_name or not password:
+        return {
+            "error": "Organization name, username, and password are all required.",
+            "code": "MISSING_FIELDS",
+            "status": 400,
+        }
+
+    organization = get_organization_by_name(organization_name)
+    if organization is None:
+        return {
+            "error": "Organization not found. Check the spelling or create a new organization.",
+            "code": "ORG_NOT_FOUND",
+            "status": 404,
+        }
+
     conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT a.accountID, a.organizationID, a.name, a.isAdmin, a.isSuperAdmin,
-               a.createdAt, a.createdByAccountID, a.passwordHash
-        FROM accounts a
-        JOIN organizations o ON o.organizationID = a.organizationID
-        WHERE o.name = ? COLLATE NOCASE AND a.name = ? COLLATE NOCASE
+        SELECT accountID, organizationID, name, isAdmin, isSuperAdmin,
+               createdAt, createdByAccountID, passwordHash
+        FROM accounts
+        WHERE organizationID = ? AND name = ? COLLATE NOCASE
         """,
-        (organization_name, account_name),
+        (organization["organizationID"], account_name),
     )
     row = cursor.fetchone()
     conn.close()
     if row is None:
-        return None
+        return {
+            "error": "Username not found in this organization.",
+            "code": "USER_NOT_FOUND",
+            "status": 401,
+        }
     if not verify_secret(password, row[7]):
-        return None
-    return _serialize_account_row(row[:7])
+        return {
+            "error": "Incorrect password.",
+            "code": "BAD_PASSWORD",
+            "status": 401,
+        }
+    return {"account": _serialize_account_row(row[:7])}
 
 
 def create_organization_with_admin(organization_name: str, admin_name: str, admin_password: str) -> dict:
@@ -1301,6 +1364,500 @@ def recompute_alerts_for_endpoint(
     )
 
 
+def _serialize_whitelist_row(row) -> dict:
+    series_identity = {}
+    raw_identity = row[8] if len(row) > 8 else "{}"
+    try:
+        parsed = json.loads(raw_identity or "{}")
+        if isinstance(parsed, dict):
+            series_identity = parsed
+    except json.JSONDecodeError:
+        series_identity = {}
+
+    return {
+        "whitelistID": int(row[0]),
+        "organizationID": int(row[1]),
+        "endpointID": row[2],
+        "logID": int(row[3]) if row[3] is not None else None,
+        "nativeEventID": int(row[4]),
+        "seriesKey": row[5] or "",
+        "periodMs": float(row[6]) if row[6] is not None else None,
+        "note": row[7] or "",
+        "seriesIdentity": series_identity,
+        "createdByAccountID": int(row[9]) if row[9] is not None else None,
+        "createdAt": int(row[10]),
+        "updatedAt": int(row[11]),
+        "endpointName": row[12] if len(row) > 12 else None,
+        "createdByName": row[13] if len(row) > 13 else None,
+        "eventName": resolve_event_name(
+            int(row[3]) if row[3] is not None else None,
+            int(row[4]),
+        ),
+        "logSource": resolve_log_source_name(int(row[3]) if row[3] is not None else None),
+        "scope": "organization" if row[2] is None else "endpoint",
+    }
+
+
+def list_alert_whitelist(organization_id: int) -> list[dict]:
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            w.whitelistID,
+            w.organizationID,
+            w.endpointID,
+            w.logID,
+            w.nativeEventID,
+            w.seriesKey,
+            w.periodMs,
+            w.note,
+            w.seriesIdentityJson,
+            w.createdByAccountID,
+            w.createdAt,
+            w.updatedAt,
+            COALESCE(e.displayName, e.hostname),
+            a.name
+        FROM alertWhitelist w
+        LEFT JOIN endpoints e ON e.endpointID = w.endpointID
+        LEFT JOIN accounts a ON a.accountID = w.createdByAccountID
+        WHERE w.organizationID = ?
+        ORDER BY w.createdAt DESC, w.whitelistID DESC
+        """,
+        (organization_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [_serialize_whitelist_row(row) for row in rows]
+
+
+def get_alert_whitelist_entry(whitelist_id: int, organization_id: int) -> dict | None:
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            w.whitelistID,
+            w.organizationID,
+            w.endpointID,
+            w.logID,
+            w.nativeEventID,
+            w.seriesKey,
+            w.periodMs,
+            w.note,
+            w.seriesIdentityJson,
+            w.createdByAccountID,
+            w.createdAt,
+            w.updatedAt,
+            COALESCE(e.displayName, e.hostname),
+            a.name
+        FROM alertWhitelist w
+        LEFT JOIN endpoints e ON e.endpointID = w.endpointID
+        LEFT JOIN accounts a ON a.accountID = w.createdByAccountID
+        WHERE w.whitelistID = ? AND w.organizationID = ?
+        """,
+        (whitelist_id, organization_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return _serialize_whitelist_row(row)
+
+
+def _find_duplicate_whitelist_id(
+    cursor,
+    *,
+    organization_id: int,
+    endpoint_id: str | None,
+    log_id: int | None,
+    native_event_id: int,
+    series_key: str,
+    period_ms: float | None,
+) -> int | None:
+    cursor.execute(
+        """
+        SELECT whitelistID, endpointID, logID, periodMs
+        FROM alertWhitelist
+        WHERE organizationID = ?
+          AND nativeEventID = ?
+          AND seriesKey = ?
+        """,
+        (organization_id, native_event_id, series_key),
+    )
+    for whitelist_id, existing_endpoint, existing_log_id, existing_period in cursor.fetchall():
+        if (existing_endpoint is None) != (endpoint_id is None):
+            continue
+        if endpoint_id is not None and str(existing_endpoint) != str(endpoint_id):
+            continue
+        if (existing_log_id is None) != (log_id is None):
+            continue
+        if log_id is not None and int(existing_log_id) != int(log_id):
+            continue
+        if (existing_period is None) != (period_ms is None):
+            continue
+        if period_ms is not None and not periods_near_match(float(existing_period), float(period_ms)):
+            continue
+        return int(whitelist_id)
+    return None
+
+
+def create_alert_whitelist_entry(
+    *,
+    organization_id: int,
+    created_by_account_id: int,
+    endpoint_id: str | None,
+    log_id: int | None,
+    native_event_id: int,
+    series_key: str,
+    period_ms: float | None,
+    note: str,
+    series_identity: dict | None = None,
+) -> dict:
+    from event_series import compute_series_key, extract_series_identity
+
+    note_text = (note or "").strip()
+    if not note_text:
+        raise ValueError("A note is required when whitelisting a pattern.")
+
+    resolved_identity = series_identity if isinstance(series_identity, dict) else {}
+    if log_id is not None and resolved_identity:
+        resolved_identity = extract_series_identity(int(log_id), int(native_event_id), resolved_identity)
+    resolved_key = (series_key or "").strip()
+    if not resolved_key and log_id is not None:
+        resolved_key = compute_series_key(int(log_id), int(native_event_id), resolved_identity or series_identity)
+
+    if endpoint_id is not None:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT endpointID FROM endpoints
+            WHERE endpointID = ? AND organizationID = ?
+            """,
+            (endpoint_id, organization_id),
+        )
+        if cursor.fetchone() is None:
+            conn.close()
+            raise ValueError("Endpoint not found in this organization.")
+        conn.close()
+
+    now_ms = _now_ms()
+    identity_json = json.dumps(resolved_identity or {}, separators=(",", ":"), sort_keys=True)
+
+    with _DB_WRITE_LOCK:
+        conn = connect_db()
+        cursor = conn.cursor()
+        duplicate_id = _find_duplicate_whitelist_id(
+            cursor,
+            organization_id=organization_id,
+            endpoint_id=endpoint_id,
+            log_id=log_id,
+            native_event_id=native_event_id,
+            series_key=resolved_key,
+            period_ms=period_ms,
+        )
+        if duplicate_id is not None:
+            conn.close()
+            raise ValueError("An equivalent whitelist entry already exists.")
+
+        cursor.execute(
+            """
+            INSERT INTO alertWhitelist (
+                organizationID, endpointID, logID, nativeEventID, seriesKey,
+                periodMs, note, seriesIdentityJson, createdByAccountID, createdAt, updatedAt
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                organization_id,
+                endpoint_id,
+                log_id,
+                int(native_event_id),
+                resolved_key,
+                period_ms,
+                note_text,
+                identity_json,
+                created_by_account_id,
+                now_ms,
+                now_ms,
+            ),
+        )
+        whitelist_id = int(cursor.lastrowid)
+        conn.commit()
+        conn.close()
+
+    entry = get_alert_whitelist_entry(whitelist_id, organization_id)
+    if entry is None:
+        raise RuntimeError("Failed to load whitelist entry after insert.")
+    return entry
+
+
+def update_alert_whitelist_entry(
+    whitelist_id: int,
+    organization_id: int,
+    *,
+    note: str | None = None,
+    period_ms: float | None | object = ...,
+    endpoint_id: str | None | object = ...,
+) -> dict:
+    existing = get_alert_whitelist_entry(whitelist_id, organization_id)
+    if existing is None:
+        raise ValueError("Whitelist entry not found.")
+
+    next_note = existing["note"] if note is None else (note or "").strip()
+    if not next_note:
+        raise ValueError("A note is required when whitelisting a pattern.")
+
+    next_period = existing["periodMs"] if period_ms is ... else period_ms
+    next_endpoint = existing["endpointID"] if endpoint_id is ... else endpoint_id
+
+    if next_endpoint is not None:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT endpointID FROM endpoints
+            WHERE endpointID = ? AND organizationID = ?
+            """,
+            (next_endpoint, organization_id),
+        )
+        found = cursor.fetchone()
+        conn.close()
+        if found is None:
+            raise ValueError("Endpoint not found in this organization.")
+
+    with _DB_WRITE_LOCK:
+        conn = connect_db()
+        cursor = conn.cursor()
+        duplicate_id = _find_duplicate_whitelist_id(
+            cursor,
+            organization_id=organization_id,
+            endpoint_id=next_endpoint,
+            log_id=existing["logID"],
+            native_event_id=existing["nativeEventID"],
+            series_key=existing["seriesKey"],
+            period_ms=next_period,
+        )
+        if duplicate_id is not None and duplicate_id != whitelist_id:
+            conn.close()
+            raise ValueError("An equivalent whitelist entry already exists.")
+
+        cursor.execute(
+            """
+            UPDATE alertWhitelist
+            SET note = ?, periodMs = ?, endpointID = ?, updatedAt = ?
+            WHERE whitelistID = ? AND organizationID = ?
+            """,
+            (next_note, next_period, next_endpoint, _now_ms(), whitelist_id, organization_id),
+        )
+        conn.commit()
+        conn.close()
+
+    updated = get_alert_whitelist_entry(whitelist_id, organization_id)
+    if updated is None:
+        raise RuntimeError("Failed to load whitelist entry after update.")
+    return updated
+
+
+def delete_alert_whitelist_entry(whitelist_id: int, organization_id: int) -> bool:
+    with _DB_WRITE_LOCK:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            DELETE FROM alertWhitelist
+            WHERE whitelistID = ? AND organizationID = ?
+            """,
+            (whitelist_id, organization_id),
+        )
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+    return deleted
+
+
+def resolve_alert_group_whitelist_identity(
+    alert_group_id: int,
+    organization_id: int,
+) -> dict | None:
+    """Resolve stable whitelist fields from an alert group (via child alert seriesKey)."""
+    conn = connect_db()
+    cursor = conn.cursor()
+    org_clause, org_params = _org_filter_sql("g.endpointID", organization_id)
+    cursor.execute(
+        f"""
+        SELECT
+            g.alertGroupID,
+            g.endpointID,
+            g.nativeEventID,
+            g.logID,
+            g.periodTs,
+            COALESCE(e.displayName, e.hostname),
+            (
+                SELECT a.seriesKey
+                FROM alertGroupMap gm
+                JOIN alerts a ON a.alertID = gm.alertID
+                WHERE gm.alertGroupID = g.alertGroupID
+                ORDER BY a.alertID ASC
+                LIMIT 1
+            ) AS seriesKey
+        FROM alertGroups g
+        LEFT JOIN endpoints e ON e.endpointID = g.endpointID
+        WHERE g.alertGroupID = ?{org_clause}
+        """,
+        (alert_group_id, *org_params),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        conn.close()
+        return None
+
+    series_key = row[6] or ""
+    series_identity: dict = {}
+    cursor.execute(
+        """
+        SELECT l.parsedDetails
+        FROM eventAlertMap eam
+        JOIN alertGroupMap gm ON gm.alertID = eam.alertID
+        JOIN logs l ON l.internalEventID = eam.eventID
+        WHERE gm.alertGroupID = ?
+        ORDER BY l.timestamp ASC, l.internalEventID ASC
+        LIMIT 1
+        """,
+        (alert_group_id,),
+    )
+    details_row = cursor.fetchone()
+    conn.close()
+    if details_row and details_row[0]:
+        try:
+            parsed = json.loads(details_row[0])
+            identity = parsed.get("seriesIdentity") or parsed.get("identity") or {}
+            if isinstance(identity, dict):
+                series_identity = {
+                    str(key): str(value) for key, value in identity.items() if value is not None
+                }
+        except (json.JSONDecodeError, TypeError, ValueError):
+            series_identity = {}
+
+    return {
+        "alertGroupID": int(row[0]),
+        "endpointID": row[1],
+        "endpointName": row[5] or row[1],
+        "nativeEventID": int(row[2]),
+        "logID": int(row[3]) if row[3] is not None else None,
+        "periodTs": float(row[4]) if row[4] is not None else None,
+        "seriesKey": series_key,
+        "seriesIdentity": series_identity,
+        "eventName": resolve_event_name(
+            int(row[3]) if row[3] is not None else None,
+            int(row[2]),
+        ),
+        "logSource": resolve_log_source_name(int(row[3]) if row[3] is not None else None),
+    }
+
+
+def create_alert_whitelist_from_alert_group(
+    *,
+    alert_group_id: int,
+    organization_id: int,
+    created_by_account_id: int,
+    scope: str,
+    match_period: bool,
+    note: str,
+) -> dict:
+    identity = resolve_alert_group_whitelist_identity(alert_group_id, organization_id)
+    if identity is None:
+        raise ValueError("Alert group not found.")
+
+    scope_normalized = (scope or "endpoint").strip().lower()
+    if scope_normalized not in {"endpoint", "organization"}:
+        raise ValueError("Scope must be 'endpoint' or 'organization'.")
+
+    endpoint_id = None if scope_normalized == "organization" else identity["endpointID"]
+    period_ms = identity["periodTs"] if match_period else None
+
+    return create_alert_whitelist_entry(
+        organization_id=organization_id,
+        created_by_account_id=created_by_account_id,
+        endpoint_id=endpoint_id,
+        log_id=identity["logID"],
+        native_event_id=identity["nativeEventID"],
+        series_key=identity["seriesKey"],
+        period_ms=period_ms,
+        note=note,
+        series_identity=identity["seriesIdentity"],
+    )
+
+
+def _series_key_subquery() -> str:
+    return """
+        (
+            SELECT a.seriesKey
+            FROM alertGroupMap gm
+            JOIN alerts a ON a.alertID = gm.alertID
+            WHERE gm.alertGroupID = g.alertGroupID
+            ORDER BY a.alertID ASC
+            LIMIT 1
+        )
+    """
+
+
+def _list_alert_group_identities(
+    cursor,
+    *,
+    where_sql: str,
+    params: list | tuple,
+) -> list[dict]:
+    cursor.execute(
+        f"""
+        SELECT
+            g.alertGroupID,
+            g.endpointID,
+            g.nativeEventID,
+            g.logID,
+            g.periodTs,
+            {_series_key_subquery()} AS seriesKey
+        FROM alertGroups g
+        {where_sql}
+        """,
+        params,
+    )
+    identities = []
+    for row in cursor.fetchall():
+        identities.append(
+            {
+                "alertGroupID": int(row[0]),
+                "endpointID": row[1],
+                "nativeEventID": int(row[2]),
+                "logID": int(row[3]) if row[3] is not None else None,
+                "periodTs": float(row[4]) if row[4] is not None else None,
+                "seriesKey": row[5] or "",
+            }
+        )
+    return identities
+
+
+def _visible_alert_group_ids(
+    identities: list[dict],
+    whitelist_entries: list[dict],
+) -> set[int]:
+    if not whitelist_entries:
+        return {item["alertGroupID"] for item in identities}
+    visible: set[int] = set()
+    for item in identities:
+        if is_alert_whitelisted(
+            endpoint_id=str(item["endpointID"] or ""),
+            log_id=item["logID"],
+            native_event_id=item["nativeEventID"],
+            series_key=item["seriesKey"],
+            period_ms=item["periodTs"],
+            entries=whitelist_entries,
+        ):
+            continue
+        visible.add(item["alertGroupID"])
+    return visible
+
+
 def _serialize_alert_group_row(row, windows):
     log_id = row[8] if len(row) > 8 else None
     native_event_id = row[2]
@@ -1367,7 +1924,8 @@ def fetch_alerts(filters: AlertQueryFilters):
             a.tsBegin,
             a.tsEnd,
             a.confidence,
-            a.phase
+            a.phase,
+            {_series_key_subquery()} AS seriesKey
         FROM alertGroups g
         LEFT JOIN endpoints e ON e.endpointID = g.endpointID
         LEFT JOIN alertGroupMap gm ON gm.alertGroupID = g.alertGroupID
@@ -1386,6 +1944,7 @@ def fetch_alerts(filters: AlertQueryFilters):
         alert = grouped_alerts.get(alert_group_id)
         if alert is None:
             alert = _serialize_alert_group_row(row[:12], [])
+            alert["seriesKey"] = row[17] or ""
             grouped_alerts[alert_group_id] = alert
 
         child_alert_id = row[12]
@@ -1401,6 +1960,9 @@ def fetch_alerts(filters: AlertQueryFilters):
             )
 
     alerts = list(grouped_alerts.values())
+    if filters.organization_id is not None:
+        whitelist_entries = list_alert_whitelist(filters.organization_id)
+        alerts = filter_alerts_against_whitelist(alerts, whitelist_entries)
     if filters.sort_key == "eventName":
         reverse = filters.sort_direction == "desc"
         alerts.sort(key=lambda item: item.get("eventName", "").lower(), reverse=reverse)
@@ -1577,6 +2139,27 @@ def fetch_alert_detail(alert_group_id: int, organization_id: int | None = None):
     alert["contributingEventCount"] = len(stored_events)
     alert["eventDetails"] = representative_event["parsedDetails"] if representative_event else None
     alert["overviewContext"] = overview_context
+
+    identity = None
+    if organization_id is not None:
+        identity = resolve_alert_group_whitelist_identity(alert_group_id, organization_id)
+    if identity is not None:
+        alert["seriesKey"] = identity["seriesKey"]
+        alert["seriesIdentity"] = identity["seriesIdentity"]
+        whitelist_entries = list_alert_whitelist(organization_id)
+        alert["isWhitelisted"] = is_alert_whitelisted(
+            endpoint_id=str(identity["endpointID"] or ""),
+            log_id=identity["logID"],
+            native_event_id=identity["nativeEventID"],
+            series_key=identity["seriesKey"],
+            period_ms=identity["periodTs"],
+            entries=whitelist_entries,
+        )
+    else:
+        alert.setdefault("seriesKey", "")
+        alert.setdefault("seriesIdentity", {})
+        alert["isWhitelisted"] = False
+
     return alert
 
 
@@ -1662,7 +2245,6 @@ def fetch_entities(
         """
         base_params = ()
 
-    counts_clause, counts_params = _org_filter_sql("endpointID", organization_id)
     cursor.execute(
         f"""
         SELECT
@@ -1670,8 +2252,7 @@ def fetch_entities(
             base.displayName,
             base.hostname,
             base.ip,
-            COALESCE(base.lastSeenAt, log_stats.latestLogTs, alert_stats.latestAlertEnd) AS lastSeenAt,
-            COALESCE(counts.alertCount, 0) AS alertsLastWeek
+            COALESCE(base.lastSeenAt, log_stats.latestLogTs, alert_stats.latestAlertEnd) AS lastSeenAt
         FROM (
             {base_sql}
         ) base
@@ -1685,32 +2266,44 @@ def fetch_entities(
             FROM alertGroups
             GROUP BY endpointID
         ) alert_stats ON alert_stats.endpointID = base.endpointID
-        LEFT JOIN (
-            SELECT endpointID, COUNT(*) AS alertCount
-            FROM alertGroups
-            WHERE tsBegin <= ?
-              AND tsEnd >= ?{counts_clause}
-            GROUP BY endpointID
-        ) counts ON counts.endpointID = base.endpointID
-        ORDER BY alertsLastWeek DESC, base.endpointID ASC
+        ORDER BY base.endpointID ASC
         """,
-        (*base_params, effective_end_ms, effective_start_ms, *counts_params),
+        base_params,
     )
     rows = cursor.fetchall()
+
+    org_clause, org_params = _org_filter_sql("g.endpointID", organization_id)
+    identities = _list_alert_group_identities(
+        cursor,
+        where_sql=f"WHERE g.tsBegin <= ? AND g.tsEnd >= ?{org_clause}",
+        params=(effective_end_ms, effective_start_ms, *org_params),
+    )
+    whitelist_entries = list_alert_whitelist(organization_id) if organization_id is not None else []
+    visible_ids = _visible_alert_group_ids(identities, whitelist_entries)
+    counts_by_endpoint: dict[str, int] = {}
+    for item in identities:
+        if item["alertGroupID"] not in visible_ids:
+            continue
+        endpoint_id = str(item["endpointID"] or "")
+        counts_by_endpoint[endpoint_id] = counts_by_endpoint.get(endpoint_id, 0) + 1
+
     conn.close()
 
     entities = []
-    for endpoint_id, display_name, hostname, ip, last_seen_at, alerts_last_week in rows:
+    for endpoint_id, display_name, hostname, ip, last_seen_at in rows:
+        alert_count = int(counts_by_endpoint.get(str(endpoint_id), 0))
         entities.append(
             {
                 "endpointID": endpoint_id,
                 "name": display_name or hostname,
                 "ip": ip,
                 "lastSeenAt": int(last_seen_at) if last_seen_at is not None else None,
-                "alertsLastWeek": int(alerts_last_week),
-                "alertCount": int(alerts_last_week),
+                "alertsLastWeek": alert_count,
+                "alertCount": alert_count,
             }
         )
+
+    entities.sort(key=lambda item: (-int(item["alertsLastWeek"]), str(item["endpointID"])))
 
     return {
         "windowStart": effective_start_ms,
@@ -1726,17 +2319,14 @@ def _count_alerts_with_last_event_since(
     organization_id: int | None = None,
 ) -> int:
     """Alerts whose last observed event (tsEnd) is at or after since_ms."""
-    org_clause, org_params = _org_filter_sql("endpointID", organization_id)
-    cursor.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM alertGroups
-        WHERE tsEnd >= ?{org_clause}
-        """,
-        (since_ms, *org_params),
+    org_clause, org_params = _org_filter_sql("g.endpointID", organization_id)
+    identities = _list_alert_group_identities(
+        cursor,
+        where_sql=f"WHERE g.tsEnd >= ?{org_clause}",
+        params=(since_ms, *org_params),
     )
-    row = cursor.fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
+    whitelist_entries = list_alert_whitelist(organization_id) if organization_id is not None else []
+    return len(_visible_alert_group_ids(identities, whitelist_entries))
 
 
 def _count_overlapping_alert_groups(
@@ -1745,18 +2335,14 @@ def _count_overlapping_alert_groups(
     window_end_ms: int,
     organization_id: int | None = None,
 ) -> int:
-    org_clause, org_params = _org_filter_sql("endpointID", organization_id)
-    cursor.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM alertGroups
-        WHERE tsBegin <= ?
-          AND tsEnd >= ?{org_clause}
-        """,
-        (window_end_ms, window_start_ms, *org_params),
+    org_clause, org_params = _org_filter_sql("g.endpointID", organization_id)
+    identities = _list_alert_group_identities(
+        cursor,
+        where_sql=f"WHERE g.tsBegin <= ? AND g.tsEnd >= ?{org_clause}",
+        params=(window_end_ms, window_start_ms, *org_params),
     )
-    row = cursor.fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
+    whitelist_entries = list_alert_whitelist(organization_id) if organization_id is not None else []
+    return len(_visible_alert_group_ids(identities, whitelist_entries))
 
 
 def fetch_dashboard_stats(
@@ -1784,72 +2370,16 @@ def fetch_dashboard_stats(
     active_in_window = _count_overlapping_alert_groups(cursor, effective_start_ms, effective_end_ms, organization_id)
 
     org_g_clause, org_g_params = _org_filter_sql("g.endpointID", organization_id)
-    org_clause, org_params = _org_filter_sql("endpointID", organization_id)
-
-    cursor.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM alertGroups
-        WHERE tsBegin <= ?
-          AND tsEnd >= ?
-          AND confidence >= 80{org_clause}
-        """,
-        (effective_end_ms, effective_start_ms, *org_params),
+    whitelist_entries = list_alert_whitelist(organization_id) if organization_id is not None else []
+    window_identities = _list_alert_group_identities(
+        cursor,
+        where_sql=f"WHERE g.tsBegin <= ? AND g.tsEnd >= ?{org_g_clause}",
+        params=(effective_end_ms, effective_start_ms, *org_g_params),
     )
-    high_confidence_in_window = int(cursor.fetchone()[0])
-
-    timeline = []
-    for bucket in _timeline_buckets(effective_start_ms, effective_end_ms):
-        count = _count_overlapping_alert_groups(cursor, bucket["bucketStart"], bucket["bucketEnd"], organization_id)
-        timeline.append({**bucket, "count": count})
-
-    cursor.execute(
-        f"""
-        SELECT nativeEventID, logID, COUNT(*) AS alertCount
-        FROM alertGroups
-        WHERE tsBegin <= ?
-          AND tsEnd >= ?{org_clause}
-        GROUP BY nativeEventID, logID
-        ORDER BY alertCount DESC, nativeEventID ASC
-        LIMIT 8
-        """,
-        (effective_end_ms, effective_start_ms, *org_params),
-    )
-    top_events = []
-    for native_event_id, log_id, alert_count in cursor.fetchall():
-        top_events.append(
-            {
-                "nativeEventID": native_event_id,
-                "eventName": resolve_event_name(log_id, native_event_id),
-                "alertCount": int(alert_count),
-            }
-        )
-
-    cursor.execute(
-        f"""
-        SELECT
-            g.endpointID,
-            COALESCE(e.displayName, e.hostname) AS name,
-            COUNT(*) AS alertCount
-        FROM alertGroups g
-        LEFT JOIN endpoints e ON e.endpointID = g.endpointID
-        WHERE g.tsBegin <= ?
-          AND g.tsEnd >= ?{org_g_clause}
-        GROUP BY g.endpointID, name
-        ORDER BY alertCount DESC, g.endpointID ASC
-        LIMIT 5
-        """,
-        (effective_end_ms, effective_start_ms, *org_g_params),
-    )
-    top_endpoints = []
-    for endpoint_id, hostname, alert_count in cursor.fetchall():
-        top_endpoints.append(
-            {
-                "endpointID": endpoint_id,
-                "name": hostname,
-                "alertCount": int(alert_count),
-            }
-        )
+    visible_window_ids = _visible_alert_group_ids(window_identities, whitelist_entries)
+    visible_window_identities = [
+        item for item in window_identities if item["alertGroupID"] in visible_window_ids
+    ]
 
     cursor.execute(
         f"""
@@ -1861,20 +2391,42 @@ def fetch_dashboard_stats(
             g.confidence,
             g.tsBegin,
             g.tsEnd,
-            COALESCE(e.displayName, e.hostname) AS name
+            COALESCE(e.displayName, e.hostname) AS name,
+            g.periodTs,
+            {_series_key_subquery()} AS seriesKey
         FROM alertGroups g
         LEFT JOIN endpoints e ON e.endpointID = g.endpointID
         WHERE g.confidence >= 80
           AND g.tsBegin <= ?
           AND g.tsEnd >= ?{org_g_clause}
         ORDER BY g.confidence DESC, g.tsEnd DESC, g.alertGroupID DESC
-        LIMIT 5
+        LIMIT 40
         """,
         (effective_end_ms, effective_start_ms, *org_g_params),
     )
     recent_high_confidence_alerts = []
     for row in cursor.fetchall():
-        alert_group_id, endpoint_id, native_event_id, log_id, confidence, ts_begin, ts_end, hostname = row
+        (
+            alert_group_id,
+            endpoint_id,
+            native_event_id,
+            log_id,
+            confidence,
+            ts_begin,
+            ts_end,
+            hostname,
+            period_ts,
+            series_key,
+        ) = row
+        if is_alert_whitelisted(
+            endpoint_id=str(endpoint_id or ""),
+            log_id=int(log_id) if log_id is not None else None,
+            native_event_id=int(native_event_id),
+            series_key=series_key or "",
+            period_ms=float(period_ts) if period_ts is not None else None,
+            entries=whitelist_entries,
+        ):
+            continue
         recent_high_confidence_alerts.append(
             {
                 "alertID": alert_group_id,
@@ -1885,6 +2437,76 @@ def fetch_dashboard_stats(
                 "confidence": int(confidence),
                 "tsBegin": ts_begin,
                 "tsEnd": ts_end,
+            }
+        )
+        if len(recent_high_confidence_alerts) >= 5:
+            break
+
+    # Confidence for high-confidence summary from already-loaded visible identities.
+    conf_by_id = {}
+    if visible_window_identities:
+        placeholders = ",".join("?" for _ in visible_window_identities)
+        cursor.execute(
+            f"""
+            SELECT alertGroupID, confidence
+            FROM alertGroups
+            WHERE alertGroupID IN ({placeholders})
+            """,
+            [item["alertGroupID"] for item in visible_window_identities],
+        )
+        conf_by_id = {int(row[0]): int(row[1]) for row in cursor.fetchall()}
+
+    high_confidence_in_window = sum(
+        1 for item in visible_window_identities if conf_by_id.get(item["alertGroupID"], 0) >= 80
+    )
+
+    event_counts: dict[tuple[int | None, int], int] = {}
+    endpoint_counts: dict[str, int] = {}
+    for item in visible_window_identities:
+        event_key = (item["logID"], item["nativeEventID"])
+        event_counts[event_key] = event_counts.get(event_key, 0) + 1
+        endpoint_id = str(item["endpointID"] or "")
+        endpoint_counts[endpoint_id] = endpoint_counts.get(endpoint_id, 0) + 1
+
+    timeline = []
+    for bucket in _timeline_buckets(effective_start_ms, effective_end_ms):
+        count = _count_overlapping_alert_groups(
+            cursor, bucket["bucketStart"], bucket["bucketEnd"], organization_id
+        )
+        timeline.append({**bucket, "count": count})
+
+    top_events = []
+    for (log_id, native_event_id), alert_count in sorted(
+        event_counts.items(),
+        key=lambda pair: (-pair[1], pair[0][1]),
+    )[:8]:
+        top_events.append(
+            {
+                "nativeEventID": native_event_id,
+                "eventName": resolve_event_name(log_id, native_event_id),
+                "alertCount": int(alert_count),
+            }
+        )
+
+    top_endpoints = []
+    for endpoint_id, alert_count in sorted(
+        endpoint_counts.items(),
+        key=lambda pair: (-pair[1], pair[0]),
+    )[:5]:
+        cursor.execute(
+            """
+            SELECT COALESCE(displayName, hostname)
+            FROM endpoints
+            WHERE endpointID = ?
+            """,
+            (endpoint_id,),
+        )
+        name_row = cursor.fetchone()
+        top_endpoints.append(
+            {
+                "endpointID": endpoint_id,
+                "name": name_row[0] if name_row else endpoint_id,
+                "alertCount": int(alert_count),
             }
         )
 

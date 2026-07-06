@@ -70,6 +70,30 @@ def test_authenticate_account(temp_db):
     assert database.authenticate_account("Other", "root", "pw123") is None
 
 
+def test_attempt_login_error_codes(temp_db):
+    database.create_organization_with_admin("Acme", "root", "pw123")
+
+    missing = database.attempt_login("", "root", "pw123")
+    assert missing["code"] == "MISSING_FIELDS"
+    assert missing["status"] == 400
+
+    no_org = database.attempt_login("Other", "root", "pw123")
+    assert no_org["code"] == "ORG_NOT_FOUND"
+    assert no_org["status"] == 404
+
+    no_user = database.attempt_login("Acme", "nobody", "pw123")
+    assert no_user["code"] == "USER_NOT_FOUND"
+    assert no_user["status"] == 401
+
+    bad_pw = database.attempt_login("Acme", "root", "wrong")
+    assert bad_pw["code"] == "BAD_PASSWORD"
+    assert bad_pw["status"] == 401
+
+    ok = database.attempt_login("Acme", "root", "pw123")
+    assert "account" in ok
+    assert ok["account"]["name"] == "root"
+
+
 def test_create_and_delete_account(temp_db):
     admin = database.create_organization_with_admin("Acme", "root", "pw123")
     org_id = admin["organizationID"]

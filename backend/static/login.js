@@ -8,6 +8,8 @@ const recentOrgsList = document.getElementById("recentOrgsList");
 const RECENT_ORGS_KEY = "rayleightown.recentOrgs";
 const MAX_RECENT_ORGS = 8;
 
+let authMode = "login";
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -52,6 +54,7 @@ function rememberRecentOrg(name) {
 }
 
 function setMode(mode) {
+  authMode = mode;
   const isLogin = mode === "login";
   loginForm.hidden = !isLogin;
   registerForm.hidden = isLogin;
@@ -72,18 +75,29 @@ function showError(message) {
 }
 
 function mapAuthError(status, data) {
+  const code = String(data.code || "").trim();
   const message = String(data.error || "").trim();
-  if (status === 401) {
-    return "Wrong organization, username, or password. Check all three and try again.";
+
+  if (code === "ORG_EXISTS" || (status === 409 && /organization.*already exists/i.test(message))) {
+    return "An organization with that name already exists. Sign in instead.";
   }
-  if (status === 404 || /organization/i.test(message)) {
+  if (code === "ORG_NOT_FOUND" || status === 404) {
     return "Organization not found. Check the spelling or create a new organization.";
+  }
+  if (code === "USER_NOT_FOUND") {
+    return "Username not found in this organization.";
+  }
+  if (code === "BAD_PASSWORD") {
+    return "Incorrect password.";
+  }
+  if (code === "MISSING_FIELDS" || status === 400) {
+    return message || "Organization name, username, and password are all required.";
   }
   if (status === 409) {
     return message || "That username is already taken in this organization.";
   }
-  if (status === 400) {
-    return message || "Please check the form and try again.";
+  if (status === 401) {
+    return message || "Wrong organization, username, or password.";
   }
   return message || "Something went wrong. Please try again.";
 }

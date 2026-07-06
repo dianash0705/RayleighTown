@@ -44,7 +44,11 @@ def test_register_logs_in_and_me_works(client):
 def test_duplicate_org_registration_conflicts(client):
     _register(client)
     client.post("/api/auth/logout")
-    assert _register(client).status_code == 409
+    response = _register(client)
+    assert response.status_code == 409
+    body = response.get_json()
+    assert body["code"] == "ORG_EXISTS"
+    assert "already exists" in body["error"].lower()
 
 
 def test_login_wrong_password_rejected(client):
@@ -55,6 +59,33 @@ def test_login_wrong_password_rejected(client):
         json={"organizationName": "Acme", "username": "root", "password": "nope"},
     )
     assert bad.status_code == 401
+    body = bad.get_json()
+    assert body["code"] == "BAD_PASSWORD"
+    assert "password" in body["error"].lower()
+
+
+def test_login_unknown_organization(client):
+    response = client.post(
+        "/api/auth/login",
+        json={"organizationName": "MissingOrg", "username": "root", "password": "pw123"},
+    )
+    assert response.status_code == 404
+    body = response.get_json()
+    assert body["code"] == "ORG_NOT_FOUND"
+    assert "organization" in body["error"].lower()
+
+
+def test_login_unknown_user(client):
+    _register(client)
+    client.post("/api/auth/logout")
+    response = client.post(
+        "/api/auth/login",
+        json={"organizationName": "Acme", "username": "nobody", "password": "pw123"},
+    )
+    assert response.status_code == 401
+    body = response.get_json()
+    assert body["code"] == "USER_NOT_FOUND"
+    assert "username" in body["error"].lower()
 
 
 def test_data_apis_require_login(client):

@@ -55,13 +55,103 @@
     }
   }
 
+  function currentPageKey() {
+    const explicit = (document.body.dataset.page || "").trim();
+    if (explicit) {
+      return explicit;
+    }
+    const path = window.location.pathname.replace(/\/+$/, "") || "/";
+    if (path === "/" || path === "/dashboard") {
+      return "dashboard";
+    }
+    if (path === "/alerts") {
+      return "alerts";
+    }
+    if (path === "/entities") {
+      return "entities";
+    }
+    if (path === "/whitelist") {
+      return "whitelist";
+    }
+    if (path === "/admin") {
+      return "admin";
+    }
+    return "";
+  }
+
+  function injectMoreMenu(nav) {
+    const page = currentPageKey();
+    const secondaryActive = page === "entities" || page === "whitelist";
+
+    const wrap = document.createElement("div");
+    wrap.className = "nav-more" + (secondaryActive ? " is-active" : "");
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "nav-link nav-more-toggle" + (secondaryActive ? " is-active" : "");
+    toggle.setAttribute("aria-haspopup", "true");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.innerHTML = "More <span class='nav-more-caret' aria-hidden='true'>▾</span>";
+
+    const menu = document.createElement("div");
+    menu.className = "nav-more-menu";
+    menu.hidden = true;
+    menu.setAttribute("role", "menu");
+
+    const items = [
+      { href: "/entities", label: "Entities", key: "entities" },
+      { href: "/whitelist", label: "Whitelist", key: "whitelist" },
+    ];
+    for (const item of items) {
+      const link = document.createElement("a");
+      link.className = "nav-more-item" + (page === item.key ? " is-active" : "");
+      link.href = item.href;
+      link.textContent = item.label;
+      link.setAttribute("role", "menuitem");
+      if (page === item.key) {
+        link.setAttribute("aria-current", "page");
+      }
+      menu.appendChild(link);
+    }
+
+    function setOpen(open) {
+      menu.hidden = !open;
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      wrap.classList.toggle("is-open", open);
+    }
+
+    toggle.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(menu.hidden);
+    });
+
+    document.addEventListener("pointerdown", function (event) {
+      if (!wrap.contains(event.target)) {
+        setOpen(false);
+      }
+    });
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    });
+
+    wrap.appendChild(toggle);
+    wrap.appendChild(menu);
+    nav.appendChild(wrap);
+  }
+
   function injectNav(account) {
     const nav = document.querySelector(".page-nav");
     if (!nav) {
       return;
     }
 
-    const onAdminPage = document.body.dataset.page === "admin";
+    injectMoreMenu(nav);
+
+    const onAdminPage = currentPageKey() === "admin";
 
     if (account.isAdmin && !onAdminPage) {
       const adminLink = document.createElement("a");

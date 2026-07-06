@@ -18,9 +18,13 @@ from auth import (
 from config import REQUIRE_ENDPOINT_AUTH, UPLOAD_DIR
 from database import (
     authenticate_account,
+    attempt_login,
     create_account,
+    create_alert_whitelist_entry,
+    create_alert_whitelist_from_alert_group,
     create_organization_with_admin,
     delete_account,
+    delete_alert_whitelist_entry,
     delete_endpoint,
     fetch_alert_detail,
     fetch_alerts,
@@ -30,12 +34,16 @@ from database import (
     get_account_by_id,
     get_organization_by_id,
     list_accounts_for_organization,
+    list_alert_whitelist,
     list_registered_endpoints,
     register_endpoint,
     reset_endpoint_secret,
+    resolve_alert_group_whitelist_identity,
     set_account_admin,
+    update_alert_whitelist_entry,
     verify_endpoint_secret,
 )
+from event_series import list_series_field_catalog
 from log_registry import LOG_TYPE_CONFIG, LOG_SOURCE_MAP, all_event_names
 
 
@@ -183,6 +191,14 @@ def register_routes(app):
     def admin_js():
         return send_from_directory(STATIC_DIR, "admin.js")
 
+    @app.get("/whitelist")
+    def whitelist_page():
+        return send_from_directory(STATIC_DIR, "whitelist.html")
+
+    @app.get("/whitelist.js")
+    def whitelist_js():
+        return send_from_directory(STATIC_DIR, "whitelist.js")
+
     @app.get("/auth.js")
     def auth_js():
         return send_from_directory(STATIC_DIR, "auth.js")
@@ -206,7 +222,11 @@ def register_routes(app):
         try:
             account = create_organization_with_admin(organization_name, admin_name, admin_password)
         except ValueError as error:
-            return jsonify({"error": str(error)}), 409
+            message = str(error)
+            code = "ORG_EXISTS" if "already exists" in message.lower() else "REGISTER_FAILED"
+            if code == "ORG_EXISTS":
+                message = "An organization with that name already exists. Sign in instead."
+            return jsonify({"error": message, "code": code}), 409
 
         login_session(account["accountID"])
         return jsonify({"account": _account_public(account)}), 201
@@ -218,13 +238,13 @@ def register_routes(app):
         account_name = (payload.get("username") or "").strip()
         password = payload.get("password") or ""
 
-        if not organization_name or not account_name or not password:
-            return jsonify({"error": "Organization name, username, and password are all required."}), 400
+        result = attempt_login(organization_name, account_name, password)
+        if "account" not in result:
+            return jsonify(
+                {"error": result["error"], "code": result["code"]}
+            ), int(result["status"])
 
-        account = authenticate_account(organization_name, account_name, password)
-        if account is None:
-            return jsonify({"error": "Invalid organization, username, or password."}), 401
-
+        account = result["account"]
         login_session(account["accountID"])
         return jsonify({"account": _account_public(account)}), 200
 
@@ -270,7 +290,9 @@ def register_routes(app):
                 created_by_account_id=account["accountID"],
             )
         except ValueError as error:
-            return jsonify({"error": str(error)}), 409
+            message = str(error)
+            code = "USER_EXISTS" if "already exists" in message.lower() else "CREATE_USER_FAILED"
+            return jsonify({"error": message, "code": code}), 409
 
         return jsonify({"account": _account_public(created)}), 201
 
@@ -371,6 +393,7 @@ def register_routes(app):
         return jsonify(
             {
                 "eventNames": all_event_names(),
+                "seriesFieldCatalog": list_series_field_catalog(),
                 "timePresets": [
                     {"id": "last_24h", "label": "Last 24 hours"},
                     {"id": "last_week", "label": "Last week"},
@@ -439,6 +462,110 @@ def register_routes(app):
         if alert is None:
             return jsonify({"error": f"Alert group {alert_group_id} not found."}), 404
         return jsonify(alert), 200
+
+    @app.get("/api/whitelist")
+    @login_required
+    def get_whitelist(account):
+        entries = list_alert_whitelist(account["organizationID"])
+        return jsonify({"count": len(entries), "entries": entries}), 200
+
+    @app.get("/api/whitelist/preview/<int:alert_group_id>")
+    @login_required
+    def preview_whitelist_from_alert(account, alert_group_id: int):
+        identity = resolve_alert_group_whitelist_identity(
+            alert_group_id,
+            account["organizationID"],
+        )
+        if identity is None:
+            return jsonify({"error": f"Alert group {alert_group_id} not found."}), 404
+        return jsonify(identity), 200
+
+    @app.post("/api/whitelist")
+    @login_required
+    def create_whitelist_entry(account):
+        payload = request.get_json(silent=True) or {}
+        try:
+            if payload.get("fromAlertGroupID") is not None:
+                entry = create_alert_whitelist_from_alert_group(
+                    alert_group_id=int(payload["fromAlertGroupID"]),
+                    organization_id=account["organizationID"],
+                    created_by_account_id=account["accountID"],
+                    scope=str(payload.get("scope") or "endpoint"),
+                    match_period=bool(payload.get("matchPeriod")),
+                    note=str(payload.get("note") or ""),
+                )
+            else:
+                scope = str(payload.get("scope") or "organization").strip().lower()
+                if scope not in {"endpoint", "organization"}:
+                    raise ValueError("Scope must be 'endpoint' or 'organization'.")
+                endpoint_id = payload.get("endpointID")
+                if scope == "organization":
+                    endpoint_id = None
+                elif endpoint_id is not None:
+                    endpoint_id = str(endpoint_id).strip() or None
+                if scope == "endpoint" and not endpoint_id:
+                    raise ValueError("endpointID is required when scope is 'endpoint'.")
+                period_raw = payload.get("periodMs")
+                period_ms = float(period_raw) if period_raw is not None and period_raw != "" else None
+                series_identity = (
+                    payload.get("seriesIdentity")
+                    if isinstance(payload.get("seriesIdentity"), dict)
+                    else None
+                )
+                entry = create_alert_whitelist_entry(
+                    organization_id=account["organizationID"],
+                    created_by_account_id=account["accountID"],
+                    endpoint_id=endpoint_id,
+                    log_id=int(payload["logID"]) if payload.get("logID") is not None else None,
+                    native_event_id=int(payload["nativeEventID"]),
+                    series_key=str(payload.get("seriesKey") or ""),
+                    period_ms=period_ms,
+                    note=str(payload.get("note") or ""),
+                    series_identity=series_identity,
+                )
+        except (TypeError, ValueError) as error:
+            return jsonify({"error": str(error)}), 400
+        return jsonify({"entry": entry}), 201
+
+    @app.patch("/api/whitelist/<int:whitelist_id>")
+    @login_required
+    def patch_whitelist_entry(account, whitelist_id: int):
+        payload = request.get_json(silent=True) or {}
+        kwargs = {}
+        if "note" in payload:
+            kwargs["note"] = payload.get("note")
+        if "matchPeriod" in payload or "periodMs" in payload:
+            if payload.get("matchPeriod") is False:
+                kwargs["period_ms"] = None
+            elif payload.get("periodMs") is not None and payload.get("periodMs") != "":
+                try:
+                    kwargs["period_ms"] = float(payload["periodMs"])
+                except (TypeError, ValueError):
+                    return jsonify({"error": "Invalid periodMs."}), 400
+        if "scope" in payload or "endpointID" in payload:
+            scope = str(payload.get("scope") or "").strip().lower()
+            if scope == "organization":
+                kwargs["endpoint_id"] = None
+            elif "endpointID" in payload:
+                endpoint_id = payload.get("endpointID")
+                kwargs["endpoint_id"] = str(endpoint_id).strip() if endpoint_id else None
+        try:
+            entry = update_alert_whitelist_entry(
+                whitelist_id,
+                account["organizationID"],
+                **kwargs,
+            )
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+        return jsonify({"entry": entry}), 200
+
+    @app.delete("/api/whitelist/<int:whitelist_id>")
+    @login_required
+    def remove_whitelist_entry(account, whitelist_id: int):
+        deleted = delete_alert_whitelist_entry(whitelist_id, account["organizationID"])
+        if not deleted:
+            return jsonify({"error": "Whitelist entry not found."}), 404
+        return jsonify({"ok": True}), 200
 
     @app.post("/api/logs/upload")
     def upload_log():

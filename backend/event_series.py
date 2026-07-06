@@ -128,6 +128,47 @@ def should_skip_periodic_analysis(
     return source_port < EVENT_MATCHING_CONFIG.network_server_source_port_threshold
 
 
+def series_field_keys_for_event(log_id: int, native_event_id: int) -> tuple[str, ...]:
+    """Identity fields an operator should fill when pre-whitelisting a pattern."""
+    parser_map = SERIES_DISCRIMINATOR_FIELDS.get(log_id) or SERIES_DISCRIMINATOR_FIELDS[999]
+    field_keys = parser_map.get(native_event_id)
+    if not field_keys:
+        return ()
+    if log_id in (1, 999) and native_event_id == 3:
+        # Network series uses peer-aware keys beyond the static tuple.
+        return (
+            "protocol",
+            "image",
+            "destinationPort",
+            "destinationHostname",
+            "sourceIp",
+            "sourcePort",
+        )
+    return field_keys
+
+
+def list_series_field_catalog() -> list[dict[str, Any]]:
+    """Event types with series discriminators, for predictive whitelist UI."""
+    from log_registry import resolve_event_name, resolve_log_source_name
+
+    catalog: list[dict[str, Any]] = []
+    for log_id in sorted(SERIES_DISCRIMINATOR_FIELDS.keys()):
+        if log_id == 999:
+            continue
+        for native_event_id in sorted(SERIES_DISCRIMINATOR_FIELDS[log_id].keys()):
+            fields = series_field_keys_for_event(log_id, native_event_id)
+            catalog.append(
+                {
+                    "logID": log_id,
+                    "nativeEventID": native_event_id,
+                    "eventName": resolve_event_name(log_id, native_event_id),
+                    "logSource": resolve_log_source_name(log_id),
+                    "fields": list(fields),
+                }
+            )
+    return catalog
+
+
 def extract_series_identity(
     log_id: int,
     native_event_id: int,

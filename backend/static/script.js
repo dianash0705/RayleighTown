@@ -820,6 +820,18 @@ function renderAlertHeader(detail, windows) {
   const firstSeen = activity ? formatTimelineAxisLabel(activity.tsBegin) : null;
   const lastSeen = activity ? formatTimelineAxisLabel(activity.tsEnd) : null;
   const duration = activity ? formatDurationSpan(activity.tsEnd - activity.tsBegin) : null;
+  const identity = detail.seriesIdentity && typeof detail.seriesIdentity === "object"
+    ? detail.seriesIdentity
+    : {};
+  const identityKeys = Object.keys(identity);
+  const identityMarkup = identityKeys.length
+    ? identityKeys.sort().map(function (key) {
+        return "<span class='whitelist-chip'><span class='whitelist-chip-key'>" +
+          escapeHtml(key) + "</span> " + escapeHtml(identity[key]) + "</span>";
+      }).join(" ")
+    : (detail.seriesKey
+      ? "<code class='whitelist-series'>" + escapeHtml(detail.seriesKey) + "</code>"
+      : "<em>Entire event type (empty series key)</em>");
 
   return (
     "<header class='alert-head'>" +
@@ -834,10 +846,13 @@ function renderAlertHeader(detail, windows) {
           (detail.logSource ? " · " + escapeHtml(detail.logSource) : "") +
         "</p>" +
       "</div>" +
-      "<button type='button' class='alert-collapse' aria-label='Collapse alert'>" +
-        "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M7 14l5-5 5 5z'/></svg>" +
-        "<span>Collapse</span>" +
-      "</button>" +
+      "<div class='alert-head-actions'>" +
+        "<button type='button' class='secondary-button alert-whitelist-btn'>Whitelist this pattern</button>" +
+        "<button type='button' class='alert-collapse' aria-label='Collapse alert'>" +
+          "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M7 14l5-5 5 5z'/></svg>" +
+          "<span>Collapse</span>" +
+        "</button>" +
+      "</div>" +
     "</header>" +
     "<dl class='alert-fact-grid'>" +
       renderFact("Endpoint", detail.name || detail.endpointID, { strong: true }) +
@@ -848,8 +863,107 @@ function renderAlertHeader(detail, windows) {
       renderFact("Last seen", lastSeen) +
       renderFact("Duration", duration) +
       renderFact("Matched events", matchedCount, { strong: true }) +
+      "<div class='alert-fact alert-fact-wide'><dt>Series pattern</dt><dd>" + identityMarkup + "</dd></div>" +
     "</dl>"
   );
+}
+
+function closeWhitelistModal() {
+  const existing = document.getElementById("whitelistModalBackdrop");
+  if (existing) {
+    existing.remove();
+  }
+}
+
+function openWhitelistModal(detail) {
+  closeWhitelistModal();
+  const identity = detail.seriesIdentity && typeof detail.seriesIdentity === "object"
+    ? detail.seriesIdentity
+    : {};
+  const identityKeys = Object.keys(identity);
+  const identityPreview = identityKeys.length
+    ? identityKeys.sort().map(function (key) {
+        return escapeHtml(key) + "=" + escapeHtml(identity[key]);
+      }).join(" · ")
+    : (detail.seriesKey || "Entire event type");
+
+  const backdrop = document.createElement("div");
+  backdrop.id = "whitelistModalBackdrop";
+  backdrop.className = "whitelist-modal-backdrop";
+  backdrop.innerHTML =
+    "<div class='whitelist-modal' role='dialog' aria-modal='true' aria-labelledby='whitelistModalTitle'>" +
+      "<h3 id='whitelistModalTitle'>Whitelist this pattern</h3>" +
+      "<p>Matching alerts stay detected but hidden from the UI.</p>" +
+      "<div class='whitelist-preview'>" +
+        "<div><strong>" + escapeHtml(detail.eventName || ("Event " + detail.nativeEventID)) + "</strong></div>" +
+        "<div>" + escapeHtml(identityPreview) + "</div>" +
+        "<div>Period: " + escapeHtml(formatPeriod(detail.periodTs)) + "</div>" +
+      "</div>" +
+      "<form id='whitelistModalForm'>" +
+        "<label>Scope" +
+          "<select name='scope'>" +
+            "<option value='endpoint' selected>This endpoint (" + escapeHtml(detail.name || detail.endpointID) + ")</option>" +
+            "<option value='organization'>Entire organization</option>" +
+          "</select>" +
+        "</label>" +
+        "<label class='checkbox-row'>" +
+          "<input type='checkbox' name='matchPeriod' />" +
+          "<span>Only this period (" + escapeHtml(formatPeriod(detail.periodTs)) + ")</span>" +
+        "</label>" +
+        "<label>Note" +
+          "<input type='text' name='note' required placeholder='e.g. Sanctioned updater' />" +
+        "</label>" +
+        "<div class='whitelist-modal-actions'>" +
+          "<button type='button' class='secondary-button' data-whitelist-cancel>Cancel</button>" +
+          "<button type='submit'>Whitelist</button>" +
+        "</div>" +
+      "</form>" +
+    "</div>";
+
+  document.body.appendChild(backdrop);
+
+  backdrop.addEventListener("click", function (event) {
+    if (event.target === backdrop) {
+      closeWhitelistModal();
+    }
+  });
+  backdrop.querySelector("[data-whitelist-cancel]").addEventListener("click", closeWhitelistModal);
+
+  const form = backdrop.querySelector("#whitelistModalForm");
+  form.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const formData = new FormData(form);
+    const note = String(formData.get("note") || "").trim();
+    if (!note) {
+      return;
+    }
+    const submitButton = form.querySelector("button[type='submit']");
+    submitButton.disabled = true;
+    try {
+      const response = await fetch("/api/whitelist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fromAlertGroupID: detail.alertID,
+          scope: formData.get("scope") || "endpoint",
+          matchPeriod: formData.get("matchPeriod") === "on",
+          note: note,
+        }),
+      });
+      const data = await response.json().catch(function () { return {}; });
+      if (!response.ok) {
+        submitButton.disabled = false;
+        window.alert(data.error || "Failed to whitelist pattern.");
+        return;
+      }
+      closeWhitelistModal();
+      collapseExpandedRow();
+      loadAlerts();
+    } catch (error) {
+      submitButton.disabled = false;
+      window.alert("Network error while whitelisting pattern.");
+    }
+  });
 }
 
 function renderOverviewTimeline(detail, windows) {
@@ -1177,6 +1291,13 @@ async function loadAlertDetail(alertId, detailRow) {
       const collapseButton = panel.querySelector(".alert-collapse");
       if (collapseButton) {
         collapseButton.addEventListener("click", collapseExpandedRow);
+      }
+      const whitelistButton = panel.querySelector(".alert-whitelist-btn");
+      if (whitelistButton) {
+        whitelistButton.addEventListener("click", function (event) {
+          event.stopPropagation();
+          openWhitelistModal(data);
+        });
       }
     }
   } catch (error) {

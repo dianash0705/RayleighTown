@@ -83,6 +83,91 @@ body {
   border-color: rgba(0, 0, 0, 0.1);
 }
 
+.nav-more {
+  position: relative;
+  display: inline-flex;
+}
+
+button.nav-link.nav-more-toggle {
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-main);
+  background: rgba(115, 87, 81, 0.12);
+  border: 1px solid var(--border);
+  padding: 8px 14px;
+  border-radius: 999px;
+  box-shadow: none;
+  transform: none;
+}
+
+button.nav-link.nav-more-toggle:hover {
+  background: rgba(115, 87, 81, 0.2);
+  box-shadow: none;
+  transform: none;
+}
+
+button.nav-link.nav-more-toggle.is-active,
+button.nav-link.nav-more-toggle.is-active:hover {
+  background: var(--chip-bg);
+  color: var(--text-light);
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: none;
+  transform: none;
+}
+
+.nav-more-caret {
+  font-size: 0.75rem;
+  margin-left: 2px;
+  opacity: 0.75;
+}
+
+.nav-more.is-open .nav-more-caret {
+  display: inline-block;
+  transform: rotate(180deg);
+}
+
+.nav-more-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 148px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-more-menu[hidden] {
+  display: none !important;
+}
+
+.nav-more-item {
+  display: block;
+  padding: 8px 12px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--text-main);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.nav-more-item:hover {
+  background: rgba(115, 87, 81, 0.12);
+}
+
+.nav-more-item.is-active {
+  background: var(--chip-bg);
+  color: var(--text-light);
+}
+
 .title-line {
   display: flex;
   align-items: center;
@@ -613,7 +698,6 @@ tbody td:nth-child(4) {
 }
 
 .alert-collapse {
-  margin-left: auto;
   align-self: flex-start;
   display: inline-flex;
   align-items: center;
@@ -708,6 +792,10 @@ tbody td:nth-child(4) {
 
 .alert-fact.is-strong dd {
   font-weight: 800;
+}
+
+.alert-fact-wide {
+  grid-column: 1 / -1;
 }
 
 .alert-disclosure {
@@ -1952,7 +2040,383 @@ col.col-entity-alerts { width: 120px; }
   font-weight: 700;
 }
 
-/* ---------- Admin page ---------- */
+/* ---------- Whitelist ---------- */
+
+.whitelist-pattern-cell {
+  max-width: 320px;
+}
+
+.whitelist-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  margin: 0 6px 6px 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(62, 44, 35, 0.08);
+  font-size: 0.8rem;
+}
+
+.whitelist-chip-key {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.whitelist-series {
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+.muted-line {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  margin-top: 2px;
+}
+
+.whitelist-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(28, 18, 12, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 80;
+  padding: 18px;
+}
+
+.whitelist-modal {
+  width: min(520px, 100%);
+  background: var(--panel-bg, #f7efe4);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(28, 18, 12, 0.28);
+  padding: 20px 22px;
+}
+
+.whitelist-modal h3 {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+}
+
+.whitelist-modal p {
+  margin: 0 0 14px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.whitelist-modal label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
+.whitelist-modal textarea,
+.whitelist-modal select {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(62, 44, 35, 0.2);
+  background: #fff;
+  color: var(--text-main);
+}
+
+.whitelist-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.whitelist-preview {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(62, 44, 35, 0.06);
+  font-size: 0.86rem;
+}
+
+.alert-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.checkbox-row {
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.whitelist-list-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.whitelist-compose-panel {
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: rgba(62, 44, 35, 0.04);
+  border: 1px solid rgba(62, 44, 35, 0.1);
+  text-align: left;
+}
+
+.whitelist-compose-panel .widget-header {
+  text-align: left;
+}
+
+.whitelist-compose {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+  max-width: none;
+  width: 100%;
+  text-align: left;
+  margin: 0;
+}
+
+.whitelist-compose-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  align-items: end;
+}
+
+.whitelist-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+  text-align: left;
+}
+
+.whitelist-field-label {
+  display: block;
+  align-self: flex-start;
+  width: 100%;
+  text-align: left;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.whitelist-field-label-source {
+  align-self: center;
+  width: auto;
+  max-width: 100%;
+  text-align: center;
+  font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+  font-size: 0.8rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.whitelist-field-hint,
+.whitelist-compose .muted-line {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.whitelist-field input,
+.whitelist-field select,
+.whitelist-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 40px;
+  font: inherit;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(62, 44, 35, 0.18);
+  background: #fff;
+  color: var(--text-main);
+}
+
+.whitelist-field input:disabled,
+.whitelist-field select:disabled,
+.whitelist-option-control.is-disabled input,
+.whitelist-option-control.is-disabled select {
+  background: rgba(62, 44, 35, 0.1);
+  color: rgba(62, 44, 35, 0.38);
+  border-style: dashed;
+  border-color: rgba(62, 44, 35, 0.2);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.whitelist-option-control.is-disabled {
+  opacity: 0.58;
+  filter: grayscale(0.25);
+}
+
+.whitelist-option-control.is-disabled .whitelist-field-label {
+  color: rgba(62, 44, 35, 0.38);
+}
+
+.whitelist-option-control:not(.is-disabled) input,
+.whitelist-option-control:not(.is-disabled) select {
+  border-color: rgba(62, 44, 35, 0.28);
+  background: #fff;
+}
+
+.whitelist-compose-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.whitelist-identity-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 14px;
+  align-items: start;
+  justify-items: stretch;
+  width: 100%;
+}
+
+.whitelist-identity-grid .whitelist-field {
+  gap: 2px;
+}
+
+.whitelist-identity-grid .whitelist-field-label {
+  height: 1.15em;
+  min-height: 0;
+  line-height: 1.15;
+  display: block;
+  align-self: center;
+  width: 100%;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.whitelist-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.whitelist-option {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(62, 44, 35, 0.05);
+}
+
+.whitelist-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: 0.9rem;
+  color: var(--text-main);
+}
+
+.whitelist-compose-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.whitelist-table-shell .table-scroll {
+  overflow-x: auto;
+}
+
+#whitelistTable {
+  min-width: 0;
+  width: 100%;
+  table-layout: fixed;
+}
+
+#whitelistTable col.col-wl-note { width: 18%; }
+#whitelistTable col.col-wl-event { width: 20%; }
+#whitelistTable col.col-wl-scope { width: 12%; }
+#whitelistTable col.col-wl-match { width: 12%; }
+#whitelistTable col.col-wl-period { width: 10%; }
+#whitelistTable col.col-wl-when { width: 12%; }
+#whitelistTable col.col-wl-by { width: 8%; }
+#whitelistTable col.col-wl-actions { width: 8%; }
+
+#whitelistTable th,
+#whitelistTable td {
+  padding: 12px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#whitelistTable th.admin-actions-col,
+#whitelistTable td.admin-actions-col {
+  width: 8%;
+  padding-right: 12px;
+  text-align: right;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+#whitelistTable .row-action {
+  max-width: 100%;
+}
+
+.whitelist-note-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.whitelist-match-cell {
+  overflow: visible;
+}
+
+.whitelist-match-toggle {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.whitelist-match-toggle:hover {
+  text-decoration: underline;
+}
+
+.whitelist-match-toggle.is-open .whitelist-match-caret {
+  display: inline-block;
+  transform: rotate(180deg);
+}
+
+.whitelist-match-caret {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.whitelist-match-details {
+  margin-top: 8px;
+  max-width: 280px;
+}
+
+@media (max-width: 720px) {
+  .whitelist-list-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .whitelist-compose-row,
+  .whitelist-identity-grid,
+  .whitelist-options {
+    grid-template-columns: 1fr;
+  }
+}
 
 .admin-section {
   margin-bottom: 22px;
@@ -2115,6 +2579,14 @@ col.col-admin-ep-seen { width: 12%; }
 
 .admin-section .table-scroll {
   overflow-x: hidden;
+}
+
+.admin-section .whitelist-table-shell .table-scroll {
+  overflow-x: auto;
+}
+
+.admin-section #whitelistTable {
+  min-width: 0;
 }
 
 .endpoint-row.is-secret-expanded td {
