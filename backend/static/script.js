@@ -14,10 +14,8 @@ const chipAlertCount = document.getElementById("chipAlertCount");
 const chipHighConfidenceCount = document.getElementById("chipHighConfidenceCount");
 const chipPeriodCount = document.getElementById("chipPeriodCount");
 const chipEndpointCount = document.getElementById("chipEndpointCount");
-const table = document.getElementById("alertsTable");
-const tbody = table.querySelector("tbody");
-const sortableHeaders = Array.from(table.querySelectorAll("th.sortable"));
-const TABLE_COLSPAN = 7;
+const alertsList = document.getElementById("alertsList");
+const sortableHeaders = Array.from(document.querySelectorAll(".av-list-header .av-col.sortable"));
 const SAME_DISPLAY_TIME_BUCKET_MS = 500;
 
 let currentAlerts = [];
@@ -258,7 +256,7 @@ function compareAlerts(left, right) {
 
 function updateSortIndicators() {
   for (const header of sortableHeaders) {
-    const indicator = header.querySelector(".sort-indicator");
+    const indicator = header.querySelector(".av-sort-indicator");
     const key = header.dataset.sortKey;
     if (!indicator) {
       continue;
@@ -304,12 +302,7 @@ function setSort(key) {
 }
 
 for (const header of sortableHeaders) {
-  const button = header.querySelector("button");
-  if (!button) {
-    continue;
-  }
-
-  button.addEventListener("click", function () {
+  header.addEventListener("click", function () {
     setSort(header.dataset.sortKey);
   });
 }
@@ -433,22 +426,32 @@ function confidenceLevel(value) {
 function renderConfidenceBadge(value) {
   const level = confidenceLevel(value);
   return (
-    "<span class='confidence-badge " + level + "'>" +
-      confidenceIcon() +
+    "<span class='av-pill " + level + "'>" +
       "<span class='confidence-value'>" + formatConfidence(value) + "</span>" +
     "</span>"
   );
 }
 
+function chevronIcon() {
+  return "<span class='av-row-chevron' aria-hidden='true'><svg viewBox='0 0 6 11'><path d='M0.5 10.5C0.5 10.5 5.5 6.82 5.5 5.5C5.5 4.18 0.5 0.5 0.5 0.5' stroke='currentColor' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg></span>";
+}
+
 function renderEventCell(alert) {
   const eventName = alert.eventName || ("Event " + alert.nativeEventID);
   const eventId = alert.nativeEventID ?? "-";
-  const source = alert.logSource ? "<span class='event-source'>" + escapeHtml(alert.logSource) + "</span>" : "";
+  const source = alert.logSource
+    ? "<span class='av-row-meta-dot' aria-hidden='true'></span><span>" + escapeHtml(alert.logSource) + "</span>"
+    : "";
   return (
-    "<div class='event-cell'>" +
-      "<span class='event-name'>" + escapeHtml(eventName) + "</span>" +
-      "<span class='event-id-label'>ID " + escapeHtml(eventId) + "</span>" +
-      source +
+    "<div class='av-row-event'>" +
+      "<span class='av-row-event-name'>" +
+        chevronIcon() +
+        "<span class='av-row-title'>" + escapeHtml(eventName) + "</span>" +
+      "</span>" +
+      "<span class='av-row-meta'>" +
+        "<span>ID " + escapeHtml(eventId) + "</span>" +
+        source +
+      "</span>" +
     "</div>"
   );
 }
@@ -812,59 +815,48 @@ function renderFact(label, value, opts) {
   );
 }
 
+function renderSeriesCard(detail) {
+  const identity = detail.seriesIdentity && typeof detail.seriesIdentity === "object"
+    ? detail.seriesIdentity
+    : {};
+  const identityKeys = Object.keys(identity);
+  const chipsMarkup = identityKeys.length
+    ? identityKeys.sort().map(function (key) {
+        return "<span class='av-series-chip'><span class='av-series-chip-key'>" +
+          escapeHtml(key) + "</span><span class='av-series-chip-value'>" + escapeHtml(identity[key]) + "</span></span>";
+      }).join("")
+    : (detail.seriesKey
+      ? "<span class='av-series-chip'><code>" + escapeHtml(detail.seriesKey) + "</code></span>"
+      : "<span class='av-series-chip'><em>Entire event type (empty series key)</em></span>");
+
+  return (
+    "<div class='av-series-card'>" +
+      "<span class='av-series-card-label'>Series Pattern</span>" +
+      "<div class='av-series-chips'>" + chipsMarkup + "</div>" +
+    "</div>"
+  );
+}
+
 function renderAlertHeader(detail, windows) {
   const activity = computeActivityBounds(windows);
-  const eventName = detail.eventName || ("Event " + detail.nativeEventID);
   const period = formatPeriod(detail.periodTs);
   const matchedCount = Number(detail.contributingEventCount) || 0;
   const firstSeen = activity ? formatTimelineAxisLabel(activity.tsBegin) : null;
   const lastSeen = activity ? formatTimelineAxisLabel(activity.tsEnd) : null;
   const duration = activity ? formatDurationSpan(activity.tsEnd - activity.tsBegin) : null;
-  const identity = detail.seriesIdentity && typeof detail.seriesIdentity === "object"
-    ? detail.seriesIdentity
-    : {};
-  const identityKeys = Object.keys(identity);
-  const identityMarkup = identityKeys.length
-    ? identityKeys.sort().map(function (key) {
-        return "<span class='whitelist-chip'><span class='whitelist-chip-key'>" +
-          escapeHtml(key) + "</span> " + escapeHtml(identity[key]) + "</span>";
-      }).join(" ")
-    : (detail.seriesKey
-      ? "<code class='whitelist-series'>" + escapeHtml(detail.seriesKey) + "</code>"
-      : "<em>Entire event type (empty series key)</em>");
 
   return (
-    "<header class='alert-head'>" +
-      "<div class='alert-head-confidence'>" +
-        renderConfidenceBadge(detail.confidence) +
-      "</div>" +
-      "<div class='alert-head-signal'>" +
-        "<h3 class='alert-head-title'>" + escapeHtml(eventName) + "</h3>" +
-        "<p class='alert-head-subtitle'>" +
-          "<span class='alert-head-period'>Repeats every " + escapeHtml(period) + "</span>" +
-          " · ID " + escapeHtml(detail.nativeEventID ?? "-") +
-          (detail.logSource ? " · " + escapeHtml(detail.logSource) : "") +
-        "</p>" +
-      "</div>" +
-      "<div class='alert-head-actions'>" +
-        "<button type='button' class='secondary-button alert-whitelist-btn'>Whitelist this pattern</button>" +
-        "<button type='button' class='alert-collapse' aria-label='Collapse alert'>" +
-          "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M7 14l5-5 5 5z'/></svg>" +
-          "<span>Collapse</span>" +
-        "</button>" +
-      "</div>" +
-    "</header>" +
+    "<p class='av-repeat-line'>Repeats every " + escapeHtml(period) + "</p>" +
     "<dl class='alert-fact-grid'>" +
-      renderFact("Endpoint", detail.name || detail.endpointID, { strong: true }) +
       renderFact("Endpoint ID", detail.endpointID) +
-      renderFact("Hostname", detail.hostname) +
-      renderFact("IP address", detail.ip) +
+      renderFact("Host Name", detail.hostname) +
+      renderFact("IP Address", detail.ip) +
       renderFact("First seen", firstSeen) +
       renderFact("Last seen", lastSeen) +
       renderFact("Duration", duration) +
-      renderFact("Matched events", matchedCount, { strong: true }) +
-      "<div class='alert-fact alert-fact-wide'><dt>Series pattern</dt><dd>" + identityMarkup + "</dd></div>" +
-    "</dl>"
+      renderFact("Matched Events", matchedCount, { strong: true }) +
+    "</dl>" +
+    renderSeriesCard(detail)
   );
 }
 
@@ -1109,15 +1101,54 @@ function renderMatchedEventsTimeline(matchedEvents, windowAlert, periodMs, windo
 
 function renderWindowRail(windows) {
   return windows.map(function (windowAlert, index) {
-    const range = formatTimelineAxisLabel(windowAlert.tsBegin) + " → " + formatTimelineAxisLabel(windowAlert.tsEnd);
     return (
       "<button type='button' class='window-pill' data-window-index='" + index + "'>" +
-        "<span class='window-pill-index'>W" + (index + 1) + "</span>" +
-        "<span class='window-pill-range'>" + escapeHtml(range) + "</span>" +
-        "<span class='window-pill-conf " + confidenceLevel(windowAlert.confidence) + "'>" + escapeHtml(formatConfidence(windowAlert.confidence)) + "</span>" +
+        "Window " + (index + 1) +
       "</button>"
     );
   }).join("");
+}
+
+function renderWindowActivityBar(windowAlert) {
+  const tsBegin = Number(windowAlert.tsBegin);
+  const tsEnd = Number(windowAlert.tsEnd);
+  let leftPct = 30;
+  let rightPct = 30;
+
+  if (Number.isFinite(tsBegin) && Number.isFinite(tsEnd) && tsEnd >= tsBegin) {
+    // Pad the track on both sides of the real window bounds so the bar reads
+    // as a segment of a wider timeline, then place the "start point" / "end
+    // point" labels directly under the bar's actual (real, proportional)
+    // edges rather than at the track's outer edges.
+    const duration = Math.max(tsEnd - tsBegin, 1000);
+    const padding = duration * 0.6;
+    const spanBegin = tsBegin - padding;
+    const spanEnd = tsEnd + padding;
+    const spanWidth = Math.max(spanEnd - spanBegin, 1);
+    leftPct = Math.max(4, Math.min(46, ((tsBegin - spanBegin) / spanWidth) * 100));
+    rightPct = Math.max(4, Math.min(46, ((spanEnd - tsEnd) / spanWidth) * 100));
+  }
+
+  const leftStyle = "left:" + leftPct.toFixed(2) + "%";
+  const rightStyle = "right:" + rightPct.toFixed(2) + "%";
+
+  return (
+    "<div class='av-activity-bar-row'>" +
+      "<span class='av-activity-bar-title'>Activity Timeline</span>" +
+      "<span class='av-activity-bar-range'>" +
+        escapeHtml(formatTimelineAxisLabel(windowAlert.tsBegin)) +
+        "<svg viewBox='0 0 14 8' aria-hidden='true'><path d='M1 4h12M9 1l3 3-3 3' stroke='currentColor' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" +
+        escapeHtml(formatTimelineAxisLabel(windowAlert.tsEnd)) +
+      "</span>" +
+    "</div>" +
+    "<div class='av-activity-bar-track-wrap'>" +
+      "<div class='av-activity-bar-track'><span class='av-activity-bar-fill' style='" + leftStyle + ";" + rightStyle + "'></span></div>" +
+      "<div class='av-activity-bar-points'>" +
+        "<span class='av-activity-bar-point-start' style='left:" + leftPct.toFixed(2) + "%'>" + escapeHtml(formatShortTime(windowAlert.tsBegin)) + "</span>" +
+        "<span class='av-activity-bar-point-end' style='right:" + rightPct.toFixed(2) + "%'>" + escapeHtml(formatShortTime(windowAlert.tsEnd)) + "</span>" +
+      "</div>" +
+    "</div>"
+  );
 }
 
 function renderWindowDetailPanel(windowAlert, detail, windowIndex) {
@@ -1125,9 +1156,10 @@ function renderWindowDetailPanel(windowAlert, detail, windowIndex) {
   const eventCount = matchedEvents.length;
   return (
     "<div class='window-detail' data-window-index='" + windowIndex + "'>" +
-      "<div class='window-detail-bar'>" +
-        "<span class='window-detail-bar-title'>Window " + (windowIndex + 1) + " · " + eventCount + " event" + (eventCount === 1 ? "" : "s") + "</span>" +
-        "<span class='window-detail-bar-meta'>" + escapeHtml(formatTimelineAxisLabel(windowAlert.tsBegin)) + " → " + escapeHtml(formatTimelineAxisLabel(windowAlert.tsEnd)) + "</span>" +
+      renderWindowActivityBar(windowAlert) +
+      "<div class='event-timeline-title-row'>" +
+        "<strong>Timeline Events</strong>" +
+        "<span>" + eventCount + " event" + (eventCount === 1 ? "" : "s") + "</span>" +
       "</div>" +
       renderMatchedEventsTimeline(matchedEvents, windowAlert, detail.periodTs, windowIndex) +
     "</div>"
@@ -1215,6 +1247,10 @@ function bindAlertDetailPanel(container, detail) {
       }
     });
   }
+
+  if (windows.length) {
+    showWindow(0);
+  }
 }
 
 function bindWindowEventTimeline(host, windowAlert, windowIndex) {
@@ -1253,45 +1289,37 @@ function bindWindowEventTimeline(host, windowAlert, windowIndex) {
 
 function renderExpandedPanel(detail) {
   const windows = Array.isArray(detail.windows) ? detail.windows : [];
-  const windowLabel = windows.length === 1 ? "1 window" : windows.length + " windows";
   const hasWindows = windows.length > 0;
 
   return (
     "<div class='alert-detail-panel'>" +
       renderAlertHeader(detail, windows) +
       (hasWindows
-        ? "<details class='alert-disclosure'>" +
-            "<summary><span class='alert-disclosure-label'>Activity timeline</span><span class='alert-disclosure-hint'>" + windowLabel + "</span></summary>" +
-            "<div class='alert-disclosure-body'>" +
-              renderOverviewTimeline(detail, windows) +
-            "</div>" +
-          "</details>" +
-          "<section class='alert-windows'>" +
+        ? "<section class='alert-windows'>" +
             "<div class='alert-windows-rail'>" + renderWindowRail(windows) + "</div>" +
             "<div class='window-detail-host' hidden></div>" +
           "</section>"
         : "<p class='detail-empty'>No observation windows available.</p>") +
+      "<div class='av-detail-footer'>" +
+        "<button type='button' class='av-whitelist-link alert-whitelist-btn'>Whitelist this pattern</button>" +
+      "</div>" +
     "</div>"
   );
 }
 
-async function loadAlertDetail(alertId, detailRow) {
-  detailRow.innerHTML = "<td colspan='" + TABLE_COLSPAN + "'><div class='detail-loading'>Loading alert details...</div></td>";
+async function loadAlertDetail(alertId, detailHost) {
+  detailHost.innerHTML = "<div class='detail-loading'>Loading alert details...</div>";
   try {
     const response = await fetch("/api/alerts/" + encodeURIComponent(alertId));
     const data = await response.json();
     if (!response.ok) {
-      detailRow.innerHTML = "<td colspan='" + TABLE_COLSPAN + "'><div class='detail-error'>" + escapeHtml(data.error || "Failed to load details") + "</div></td>";
+      detailHost.innerHTML = "<div class='detail-error'>" + escapeHtml(data.error || "Failed to load details") + "</div>";
       return;
     }
-    detailRow.innerHTML = "<td colspan='" + TABLE_COLSPAN + "'>" + renderExpandedPanel(data) + "</td>";
-    const panel = detailRow.querySelector(".alert-detail-panel");
+    detailHost.innerHTML = renderExpandedPanel(data);
+    const panel = detailHost.querySelector(".alert-detail-panel");
     if (panel) {
       bindAlertDetailPanel(panel, data);
-      const collapseButton = panel.querySelector(".alert-collapse");
-      if (collapseButton) {
-        collapseButton.addEventListener("click", collapseExpandedRow);
-      }
       const whitelistButton = panel.querySelector(".alert-whitelist-btn");
       if (whitelistButton) {
         whitelistButton.addEventListener("click", function (event) {
@@ -1301,13 +1329,8 @@ async function loadAlertDetail(alertId, detailRow) {
       }
     }
   } catch (error) {
-    detailRow.innerHTML = "<td colspan='" + TABLE_COLSPAN + "'><div class='detail-error'>Network error while loading details.</div></td>";
+    detailHost.innerHTML = "<div class='detail-error'>Network error while loading details.</div>";
   }
-}
-
-function setRowExpandedState(row, expanded) {
-  row.classList.toggle("is-expanded", expanded);
-  row.setAttribute("aria-expanded", expanded ? "true" : "false");
 }
 
 function collapseExpandedRow() {
@@ -1315,80 +1338,86 @@ function collapseExpandedRow() {
     return;
   }
   const collapsingId = expandedAlertId;
-  const detailRow = tbody.querySelector("tr.detail-row[data-alert-id='" + collapsingId + "']");
-  if (detailRow) {
-    detailRow.remove();
-  }
-  for (const row of tbody.querySelectorAll("tr.alert-row.is-expanded")) {
-    setRowExpandedState(row, false);
-  }
+  const row = alertsList.querySelector(".av-row[data-alert-id='" + collapsingId + "']");
   expandedAlertId = null;
-  const hostRow = tbody.querySelector("tr.alert-row[data-alert-id='" + collapsingId + "']");
-  if (hostRow) {
-    hostRow.focus();
+  if (!row) {
+    return;
+  }
+  row.classList.remove("is-expanded");
+  const head = row.querySelector(".av-row-head");
+  const detailHost = row.querySelector(".av-row-detail");
+  if (head) {
+    head.setAttribute("aria-expanded", "false");
+    head.focus();
+  }
+  if (detailHost) {
+    detailHost.remove();
   }
 }
 
-function toggleExpandedRow(alertId, hostRow) {
+function toggleExpandedRow(alertId, row) {
   if (expandedAlertId === alertId) {
     collapseExpandedRow();
     return;
   }
 
-  for (const openRow of tbody.querySelectorAll("tr.detail-row")) {
-    openRow.remove();
-  }
-  for (const row of tbody.querySelectorAll("tr.alert-row.is-expanded")) {
-    setRowExpandedState(row, false);
-  }
+  collapseExpandedRow();
 
   expandedAlertId = alertId;
-  const detailRow = document.createElement("tr");
-  detailRow.className = "detail-row";
-  detailRow.dataset.alertId = String(alertId);
-  hostRow.insertAdjacentElement("afterend", detailRow);
-  setRowExpandedState(hostRow, true);
-  loadAlertDetail(alertId, detailRow);
+  row.classList.add("is-expanded");
+  const head = row.querySelector(".av-row-head");
+  if (head) {
+    head.setAttribute("aria-expanded", "true");
+  }
+  const detailHost = document.createElement("div");
+  detailHost.className = "av-row-detail";
+  row.appendChild(detailHost);
+  loadAlertDetail(alertId, detailHost);
 }
 
 function renderRows(alerts) {
   expandedAlertId = null;
-  tbody.innerHTML = "";
+  alertsList.innerHTML = "";
 
   for (const alert of alerts) {
-    const tr = document.createElement("tr");
+    const row = document.createElement("div");
     const isHighConfidence = Number(alert.confidence) >= 80;
-    tr.className = "alert-row" + (isHighConfidence ? " alert-row-high-confidence" : "");
-    tr.dataset.alertId = String(alert.alertID);
-    tr.setAttribute("role", "button");
-    tr.setAttribute("tabindex", "0");
-    tr.setAttribute("aria-expanded", "false");
-    tr.setAttribute("aria-label", "Alert " + alert.alertID + ", click to expand");
-    const endpointUrl = buildEndpointAlertsUrl(alert.endpointID);
-    tr.innerHTML =
-      "<td>" + renderConfidenceBadge(alert.confidence) + "</td>" +
-      "<td>" + renderEventCell(alert) + "</td>" +
-      "<td><a class='endpoint-link' href='" + escapeHtml(endpointUrl) + "' title='" + escapeHtml(alert.endpointID) + "' onclick='event.stopPropagation()'>" + escapeHtml(alert.name || alert.endpointID) + "</a></td>" +
-      "<td><span class='period-badge'>" + periodIcon() + formatPeriod(alert.periodTs) + "</span></td>" +
-      "<td>" + renderTimestampCell(alert.tsBegin) + "</td>" +
-      "<td>" + renderTimestampCell(alert.tsEnd) + "</td>" +
-      "<td>" + escapeHtml(alert.alertID) + "</td>";
+    row.className = "av-row" + (isHighConfidence ? " alert-row-high-confidence" : "");
+    row.dataset.alertId = String(alert.alertID);
 
-    tr.addEventListener("click", function () {
-      toggleExpandedRow(alert.alertID, tr);
+    const head = document.createElement("div");
+    head.className = "av-row-head";
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    head.setAttribute("aria-expanded", "false");
+    head.setAttribute("aria-label", "Alert " + alert.alertID + ", click to expand");
+
+    const endpointUrl = buildEndpointAlertsUrl(alert.endpointID);
+    head.innerHTML =
+      renderEventCell(alert) +
+      renderConfidenceBadge(alert.confidence) +
+      "<a class='av-row-endpoint endpoint-link' href='" + escapeHtml(endpointUrl) + "' title='" + escapeHtml(alert.endpointID) + "' onclick='event.stopPropagation()'>" + escapeHtml(alert.name || alert.endpointID) + "</a>" +
+      "<span class='av-pill av-pill-period'>" + escapeHtml(formatPeriod(alert.periodTs)) + "</span>" +
+      "<span class='av-row-start'>" + renderTimestampCell(alert.tsBegin) + "</span>" +
+      "<span class='av-row-end'>" + renderTimestampCell(alert.tsEnd) + "</span>" +
+      "<span class='av-row-alertid'>" + escapeHtml(alert.alertID) + "</span>";
+
+    head.addEventListener("click", function () {
+      toggleExpandedRow(alert.alertID, row);
     });
 
-    tr.addEventListener("keydown", function (event) {
+    head.addEventListener("keydown", function (event) {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        toggleExpandedRow(alert.alertID, tr);
+        toggleExpandedRow(alert.alertID, row);
       }
     });
 
-    tbody.appendChild(tr);
+    row.appendChild(head);
+    alertsList.appendChild(row);
   }
 
-  table.hidden = alerts.length === 0;
+  alertsList.hidden = alerts.length === 0;
 }
 
 function buildEndpointAlertsUrl(endpointID) {
@@ -1546,8 +1575,8 @@ async function loadAlerts() {
   } else {
     statusEl.textContent = "Loading...";
   }
-  table.hidden = true;
-  tbody.innerHTML = "";
+  alertsList.hidden = true;
+  alertsList.innerHTML = "";
 
   try {
     const response = await fetch("/api/alerts?" + buildQueryParams().toString());
@@ -1570,7 +1599,7 @@ async function loadAlerts() {
     sortAndRenderAlerts();
 
     if (currentAlerts.length === 0) {
-      table.hidden = true;
+      alertsList.hidden = true;
       if (window.PageStatus) {
         PageStatus.showEmpty(statusEl, {
           message: "No alerts match these filters. Try widening the time range or clearing a filter.",
@@ -1598,8 +1627,6 @@ function setFiltersExpanded(expanded) {
   form.hidden = !expanded;
   form.classList.toggle("is-collapsed", !expanded);
   toggleFiltersButton.setAttribute("aria-expanded", expanded ? "true" : "false");
-  toggleFiltersButton.querySelector(".filter-toggle-label").textContent = expanded ? "Hide filters" : "Show filters";
-  toggleFiltersButton.querySelector(".filter-toggle-chevron").textContent = expanded ? "▾" : "▸";
 }
 
 toggleFiltersButton.addEventListener("click", function () {

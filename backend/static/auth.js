@@ -175,6 +175,23 @@
     nav.appendChild(logoutButton);
   }
 
+  function initSidebar(account) {
+    const logoutButton = document.querySelector(".av-sidebar-logout");
+    if (logoutButton) {
+      logoutButton.addEventListener("click", async function () {
+        try {
+          await originalFetch("/api/auth/logout", { method: "POST" });
+        } finally {
+          window.location.replace("/login");
+        }
+      });
+    }
+
+    for (const link of document.querySelectorAll("[data-admin-only]")) {
+      link.hidden = !account.isAdmin;
+    }
+  }
+
   async function init() {
     let account = null;
     try {
@@ -200,6 +217,7 @@
     injectGreeting(account);
     injectOrgBadge(account);
     injectNav(account);
+    initSidebar(account);
     document.dispatchEvent(new CustomEvent("auth:ready", { detail: account }));
   }
 

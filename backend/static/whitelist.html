@@ -5,131 +5,154 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RayleighTown Whitelist</title>
 
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Instrument+Serif&family=Rubik:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
-<body data-page="whitelist">
+<body class="alerts-view" data-page="whitelist">
 
-  <div class="container">
-    <div class="header">
-      <div class="title-block">
-        <div class="title-line">
-          <span class="title-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><path d="M12 2 3 6v6c0 5 3.4 9.7 9 10 5.6-.3 9-5 9-10V6l-9-4zm0 3.2 5 2.2V12c0 3.8-2.3 7.2-5 7.9-2.7-.7-5-4.1-5-7.9V7.4l5-2.2z"/></svg>
+  <div class="av-shell">
+    <aside class="av-sidebar">
+      <div class="av-sidebar-top">
+        <a class="av-brand" href="/">
+          <span class="av-brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M21.6484 18.9639C21.6627 18.9989 21.679 19.0325 21.6973 19.0645C19.5149 22.055 15.9857 24 12 24C7.82338 24 4.14731 21.8648 1.99805 18.6279L6.13184 11.6084L9.34082 16.9199C9.57406 17.3056 10.0626 17.4512 10.4688 17.2559L13.1914 15.9463C13.3885 15.8515 13.5437 15.6864 13.625 15.4834L16.9043 7.2832L21.6484 18.9639ZM12 0C18.6274 0 24 5.37258 24 12C24 13.8948 23.5585 15.6859 22.7764 17.2793L17.709 4.80273L17.6445 4.6748C17.3097 4.11638 16.4812 4.11836 16.1494 4.67871L16.0859 4.80664L12.1816 14.5684L10.3994 15.4258L6.87207 9.58691L6.80176 9.4873C6.45266 9.05401 5.78147 9.05761 5.4375 9.49512L5.36914 9.5957L1.05566 16.9189C0.379757 15.4174 0 13.7535 0 12C0 5.37258 5.37258 0 12 0Z" fill="url(#av-logo-gradient-whitelist)"/>
+              <defs>
+                <linearGradient id="av-logo-gradient-whitelist" x1="12" y1="0" x2="12" y2="24" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#D71C1B"/>
+                  <stop offset="1" stop-color="#4A0F08"/>
+                </linearGradient>
+              </defs>
+            </svg>
           </span>
-          <h2>RayleighTown Whitelist</h2>
-        </div>
-        <p class="subtitle">Hide expected patterns from the alert UI.</p>
-      </div>
+          <span class="av-brand-name">RayleighTown</span>
+        </a>
 
-      <div class="header-tools">
-        <nav class="page-nav" aria-label="Main navigation">
-          <a class="nav-link" href="/">Dashboard</a>
-          <a class="nav-link" href="/alerts">Alerts</a>
+        <nav class="av-sidebar-nav" aria-label="Main navigation">
+          <a class="av-sidebar-link" href="/">
+            <span class="av-sidebar-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10.666 3.33301C10.666 2.71175 10.666 2.40112 10.7675 2.1561C10.9028 1.82939 11.1624 1.56983 11.4891 1.4345C11.7341 1.33301 12.0448 1.33301 12.666 1.33301C13.2873 1.33301 13.5979 1.33301 13.8429 1.4345C14.1696 1.56983 14.4292 1.82939 14.5645 2.1561C14.666 2.40112 14.666 2.71175 14.666 3.33301V5.99967C14.666 6.62093 14.666 6.93156 14.5645 7.17659C14.4292 7.50329 14.1696 7.76285 13.8429 7.89818C13.5979 7.99967 13.2873 7.99967 12.666 7.99967C12.0448 7.99967 11.7341 7.99967 11.4891 7.89818C11.1624 7.76285 10.9028 7.50329 10.7675 7.17659C10.666 6.93156 10.666 6.62093 10.666 5.99967V3.33301Z" stroke="currentColor"/><path d="M10.666 12.666C10.666 12.0448 10.666 11.7341 10.7675 11.4891C10.9028 11.1624 11.1624 10.9028 11.4891 10.7675C11.7341 10.666 12.0448 10.666 12.666 10.666C13.2873 10.666 13.5979 10.666 13.8429 10.7675C14.1696 10.9028 14.4292 11.1624 14.5645 11.4891C14.666 11.7341 14.666 12.0448 14.666 12.666C14.666 13.2873 14.666 13.5979 14.5645 13.8429C14.4292 14.1696 14.1696 14.4292 13.8429 14.5645C13.5979 14.666 13.2873 14.666 12.666 14.666C12.0448 14.666 11.7341 14.666 11.4891 14.5645C11.1624 14.4292 10.9028 14.1696 10.7675 13.8429C10.666 13.5979 10.666 13.2873 10.666 12.666Z" stroke="currentColor"/><path d="M1.33301 10.6667C1.33301 9.40959 1.33301 8.78105 1.72353 8.39052C2.11406 8 2.7426 8 3.99967 8H5.33301C6.59009 8 7.21863 8 7.60915 8.39052C7.99967 8.78105 7.99967 9.40959 7.99967 10.6667V12C7.99967 13.2571 7.99967 13.8856 7.60915 14.2761C7.21863 14.6667 6.59009 14.6667 5.33301 14.6667H3.99967C2.7426 14.6667 2.11406 14.6667 1.72353 14.2761C1.33301 13.8856 1.33301 13.2571 1.33301 12V10.6667Z" stroke="currentColor"/><path d="M1.33301 3.33301C1.33301 2.71175 1.33301 2.40112 1.4345 2.1561C1.56983 1.82939 1.82939 1.56983 2.1561 1.4345C2.40112 1.33301 2.71175 1.33301 3.33301 1.33301H5.99967C6.62093 1.33301 6.93156 1.33301 7.17659 1.4345C7.50329 1.56983 7.76285 1.82939 7.89818 2.1561C7.99967 2.40112 7.99967 2.71175 7.99967 3.33301C7.99967 3.95426 7.99967 4.26489 7.89818 4.50992C7.76285 4.83662 7.50329 5.09619 7.17659 5.23151C6.93156 5.33301 6.62093 5.33301 5.99967 5.33301H3.33301C2.71175 5.33301 2.40112 5.33301 2.1561 5.23151C1.82939 5.09619 1.56983 4.83662 1.4345 4.50992C1.33301 4.26489 1.33301 3.95426 1.33301 3.33301Z" stroke="currentColor"/></svg></span>
+            <span>Dashboard</span>
+          </a>
+          <a class="av-sidebar-link" href="/alerts">
+            <span class="av-sidebar-icon" aria-hidden="true"><svg viewBox="0 0 17 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.22696 8.59401C2.16818 9.71099 2.23576 10.8999 1.23782 11.6484C0.773352 11.9968 0.5 12.5435 0.5 13.124C0.5 13.9227 1.12554 14.6021 1.94022 14.6021H13.462C14.2767 14.6021 14.9022 13.9227 14.9022 13.124C14.9022 12.5435 14.6289 11.9968 14.1644 11.6484C13.1665 10.8999 13.2341 9.71099 13.1753 8.59401C13.022 5.68253 10.6166 3.40039 7.70112 3.40039C4.78561 3.40039 2.3802 5.68253 2.22696 8.59401Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.50098 1.90014C6.50098 2.56299 7.03832 3.40037 7.70116 3.40037C8.36401 3.40037 8.90135 2.56299 8.90135 1.90014C8.90135 1.2373 8.36401 1 7.70116 1C7.03832 1 6.50098 1.2373 6.50098 1.90014Z" stroke="currentColor"/><path d="M10.1015 14.5996C10.1015 15.9253 9.02685 17 7.70116 17C6.37547 17 5.30078 15.9253 5.30078 14.5996" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span>Alerts</span>
+          </a>
+          <a class="av-sidebar-link" href="/admin" data-admin-only hidden>
+            <span class="av-sidebar-icon" aria-hidden="true"><svg viewBox="0 0 19 22" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6.80664 14.7897C7.39496 13.7727 8.49458 13.0884 9.75401 13.0884C11.0134 13.0884 12.1131 13.7727 12.7014 14.7897M11.4382 9.31605C11.4382 10.2462 10.6842 11.0003 9.75403 11.0003C8.82387 11.0003 8.06982 10.2462 8.06982 9.31605C8.06982 8.38588 8.82387 7.63184 9.75403 7.63184C10.6842 7.63184 11.4382 8.38588 11.4382 9.31605Z" stroke="currentColor" stroke-linecap="round"/><path d="M18.1751 12.6563V9.34378C15.7695 9.34378 14.2052 6.73087 15.4232 4.65634L12.506 3.00008C11.273 5.10025 8.23643 5.10017 7.00344 3L4.0863 4.65626C5.30426 6.73082 3.73867 9.34378 1.33301 9.34378V12.6563C3.73863 12.6563 5.3029 15.2692 4.08497 17.3437L7.0021 19C8.23569 16.8988 11.2738 16.8987 12.5073 18.9999L15.4245 17.3437C14.2066 15.2692 15.7695 12.6563 18.1751 12.6563Z" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span>Admin</span>
+          </a>
+          <a class="av-sidebar-link" href="/entities">
+            <span class="av-sidebar-icon" aria-hidden="true"><svg viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.66602 4.66634C2.66602 3.5664 2.66602 3.01643 3.00772 2.67472C3.34943 2.33301 3.89941 2.33301 4.99935 2.33301C6.09929 2.33301 6.64926 2.33301 6.99097 2.67472C7.33268 3.01643 7.33268 3.5664 7.33268 4.66634C7.33268 5.76628 7.33268 6.31626 6.99097 6.65797C6.64926 6.99967 6.09929 6.99967 4.99935 6.99967C3.89941 6.99967 3.34943 6.99967 3.00772 6.65797C2.66602 6.31626 2.66602 5.76628 2.66602 4.66634Z" stroke="currentColor"/><path d="M3.43758 11.4376C4.17396 10.7012 4.54215 10.333 4.99967 10.333C5.4572 10.333 5.82539 10.7012 6.56177 11.4376C7.29815 12.174 7.66634 12.5421 7.66634 12.9997C7.66634 13.4572 7.29815 13.8254 6.56177 14.5618C5.82539 15.2982 5.4572 15.6663 4.99967 15.6663C4.54215 15.6663 4.17396 15.2982 3.43758 14.5618C2.7012 13.8254 2.33301 13.4572 2.33301 12.9997C2.33301 12.5421 2.7012 12.174 3.43758 11.4376Z" stroke="currentColor"/><path d="M5 7V10.3333M7.66667 13H11" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 12.9993C11 11.8994 11 11.3494 11.3417 11.0077C11.6834 10.666 12.2334 10.666 13.3333 10.666C14.4333 10.666 14.9832 10.666 15.325 11.0077C15.6667 11.3494 15.6667 11.8994 15.6667 12.9993C15.6667 14.0993 15.6667 14.6493 15.325 14.991C14.9832 15.3327 14.4333 15.3327 13.3333 15.3327C12.2334 15.3327 11.6834 15.3327 11.3417 14.991C11 14.6493 11 14.0993 11 12.9993Z" stroke="currentColor"/></svg></span>
+            <span>Entities</span>
+          </a>
+          <a class="av-sidebar-link is-active" href="/whitelist" aria-current="page">
+            <span class="av-sidebar-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1.33301 7.59935C1.33301 6.82717 1.49416 6.66602 2.26634 6.66602H13.733C14.5052 6.66602 14.6663 6.82717 14.6663 7.59935V8.39935C14.6663 9.17153 14.5052 9.33268 13.733 9.33268H2.26634C1.49416 9.33268 1.33301 9.17153 1.33301 8.39935V7.59935Z" stroke="currentColor" stroke-linecap="round"/><path d="M1.33301 2.26634C1.33301 1.49416 1.49416 1.33301 2.26634 1.33301H13.733C14.5052 1.33301 14.6663 1.49416 14.6663 2.26634V3.06634C14.6663 3.83852 14.5052 3.99967 13.733 3.99967H2.26634C1.49416 3.99967 1.33301 3.83852 1.33301 3.06634V2.26634Z" stroke="currentColor" stroke-linecap="round"/><path d="M1.33301 12.9333C1.33301 12.1612 1.49416 12 2.26634 12H13.733C14.5052 12 14.6663 12.1612 14.6663 12.9333V13.7333C14.6663 14.5055 14.5052 14.6667 13.733 14.6667H2.26634C1.49416 14.6667 1.33301 14.5055 1.33301 13.7333V12.9333Z" stroke="currentColor" stroke-linecap="round"/></svg></span>
+            <span>Whitelist</span>
+          </a>
         </nav>
       </div>
-    </div>
 
-    <div class="summary-row">
-      <div class="chip"><span>Patterns</span> <strong id="chipWhitelistCount">0</strong></div>
-    </div>
+      <div class="av-sidebar-bottom">
+        <button type="button" class="av-sidebar-link av-sidebar-logout" id="sidebarLogout">
+          <span class="av-sidebar-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 11.75C9.95093 12.9846 8.92206 14.0329 7.54376 13.9992C7.2231 13.9914 6.82675 13.8796 6.03408 13.656C4.12641 13.1179 2.47037 12.2136 2.07304 10.1877C2 9.8153 2 9.39626 2 8.55817L2 7.44183C2 6.60374 2 6.1847 2.07304 5.81231C2.47037 3.78644 4.12641 2.88211 6.03408 2.34402C6.82676 2.12043 7.2231 2.00864 7.54376 2.00079C8.92206 1.96707 9.95093 3.01538 10 4.25" stroke="currentColor" stroke-linecap="round"/><path d="M13.9998 7.99967H6.6665M13.9998 7.99967C13.9998 7.53286 12.6703 6.66069 12.3332 6.33301M13.9998 7.99967C13.9998 8.46649 12.6703 9.33865 12.3332 9.66634" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <span>Log out</span>
+        </button>
+      </div>
+    </aside>
 
-    <div id="whitelistStatus" class="admin-status" role="alert"></div>
-
-    <section class="widget admin-section whitelist-list-panel">
-      <div class="widget-header whitelist-list-header">
-        <div>
-          <h3 class="widget-title">Current entries</h3>
-          <p class="widget-subtitle">Or whitelist from an alert.</p>
-        </div>
-        <button type="button" id="openAddPattern" class="secondary-button">Add pattern</button>
+    <main class="av-main">
+      <div class="av-page-head">
+        <h1 class="av-title">Whitelist</h1>
+      </div>
+      <div class="summary-row">
+        <div class="chip"><span>Patterns</span> <strong id="chipWhitelistCount">0</strong></div>
       </div>
 
-      <div id="addPatternPanel" class="whitelist-compose-panel" hidden>
-        <div class="widget-header">
-          <h3 class="widget-title">Add pattern</h3>
-          <p class="widget-subtitle">Leave identity blank to mute the whole event type.</p>
+      <div id="whitelistStatus" class="admin-status" role="alert"></div>
+
+      <section class="widget admin-section whitelist-list-panel">
+        <div class="widget-header whitelist-list-header">
+          <div>
+            <h3 class="widget-title">Current entries</h3>
+            <p class="widget-subtitle">Or whitelist from an alert.</p>
+          </div>
+          <button type="button" id="openAddPattern" class="secondary-button">Add pattern</button>
         </div>
 
-        <form id="addWhitelistForm" class="whitelist-compose">
-          <div class="whitelist-compose-row">
-            <label class="whitelist-field">
-              <span class="whitelist-field-label">Note</span>
-              <input id="addNote" type="text" required placeholder="e.g. Acme Updater" />
-            </label>
-            <label class="whitelist-field">
-              <span class="whitelist-field-label">Event type</span>
-              <select id="addEventType" required></select>
-            </label>
+        <div id="addPatternPanel" class="whitelist-compose-panel" hidden>
+          <div class="widget-header">
+            <h3 class="widget-title">Add pattern</h3>
+            <p class="widget-subtitle">Leave identity blank to mute the whole event type.</p>
           </div>
 
-          <div class="whitelist-compose-block">
-            <span class="whitelist-field-label">Series identity</span>
-            <div id="addIdentityFields" class="whitelist-identity-grid"></div>
-          </div>
-
-          <div class="whitelist-options">
-            <div class="whitelist-option">
-              <label class="whitelist-check">
-                <input type="checkbox" id="addLimitEndpoint" />
-                <span>Limit to one endpoint</span>
+          <form id="addWhitelistForm" class="whitelist-compose">
+            <div class="whitelist-compose-row">
+              <label class="whitelist-field">
+                <span class="whitelist-field-label">Note</span>
+                <input id="addNote" type="text" required placeholder="e.g. Acme Updater" />
               </label>
-              <label class="whitelist-field whitelist-option-control" id="addEndpointWrap">
-                <span class="whitelist-field-label">Endpoint</span>
-                <select id="addEndpoint"></select>
+              <label class="whitelist-field">
+                <span class="whitelist-field-label">Event type</span>
+                <select id="addEventType" required></select>
               </label>
             </div>
 
-            <div class="whitelist-option">
-              <label class="whitelist-check">
-                <input type="checkbox" id="addMatchPeriod" />
-                <span>Limit to a specific period</span>
-              </label>
-              <label class="whitelist-field whitelist-option-control" id="addPeriodWrap">
-                <span class="whitelist-field-label">Period (seconds)</span>
-                <input id="addPeriodSeconds" type="number" min="1" step="1" placeholder="300" />
-              </label>
+            <div class="whitelist-compose-block">
+              <span class="whitelist-field-label">Series identity</span>
+              <div id="addIdentityFields" class="whitelist-identity-grid"></div>
             </div>
-          </div>
 
-          <div class="whitelist-compose-actions">
-            <button type="button" id="cancelAddPattern" class="secondary-button">Cancel</button>
-            <button type="submit">Add to whitelist</button>
-          </div>
-        </form>
-      </div>
+            <div class="whitelist-options">
+              <div class="whitelist-option">
+                <label class="whitelist-check">
+                  <input type="checkbox" id="addLimitEndpoint" />
+                  <span>Limit to one endpoint</span>
+                </label>
+                <label class="whitelist-field whitelist-option-control" id="addEndpointWrap">
+                  <span class="whitelist-field-label">Endpoint</span>
+                  <select id="addEndpoint"></select>
+                </label>
+              </div>
 
-      <div class="table-shell whitelist-table-shell">
-        <div class="table-scroll">
-          <table id="whitelistTable">
-            <colgroup>
-              <col class="col-wl-note" />
-              <col class="col-wl-event" />
-              <col class="col-wl-scope" />
-              <col class="col-wl-match" />
-              <col class="col-wl-period" />
-              <col class="col-wl-when" />
-              <col class="col-wl-by" />
-              <col class="col-wl-actions" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>Note</th>
-                <th>Event</th>
-                <th>Scope</th>
-                <th>Match</th>
-                <th>Period</th>
-                <th>When</th>
-                <th>By</th>
-                <th class="admin-actions-col">Actions</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+              <div class="whitelist-option">
+                <label class="whitelist-check">
+                  <input type="checkbox" id="addMatchPeriod" />
+                  <span>Limit to a specific period</span>
+                </label>
+                <label class="whitelist-field whitelist-option-control" id="addPeriodWrap">
+                  <span class="whitelist-field-label">Period (seconds)</span>
+                  <input id="addPeriodSeconds" type="number" min="1" step="1" placeholder="300" />
+                </label>
+              </div>
+            </div>
+
+            <div class="whitelist-compose-actions">
+              <button type="button" id="cancelAddPattern" class="secondary-button">Cancel</button>
+              <button type="submit">Add to whitelist</button>
+            </div>
+          </form>
         </div>
-      </div>
-      <p id="whitelistEmpty" class="detail-empty" hidden>No whitelist entries yet.</p>
-    </section>
+
+        <div class="whitelist-list-shell">
+          <div class="av-list-scroll">
+            <div class="av-list-header av-grid-whitelist" role="row">
+              <div class="av-col-label">Note</div>
+              <div class="av-col-label">Event</div>
+              <div class="av-col-label">Scope</div>
+              <div class="av-col-label">Match</div>
+              <div class="av-col-label">Period</div>
+              <div class="av-col-label">When</div>
+              <div class="av-col-label">By</div>
+              <div class="av-col-label av-col-label-actions">Actions</div>
+            </div>
+            <div class="av-list av-grid-whitelist-list" id="whitelistList" role="rowgroup"></div>
+          </div>
+        </div>
+        <p id="whitelistEmpty" class="detail-empty" hidden>No whitelist entries yet.</p>
+      </section>
+    </main>
   </div>
 
   <script src="auth.js"></script>

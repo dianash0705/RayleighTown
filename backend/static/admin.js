@@ -1,6 +1,6 @@
 const statusEl = document.getElementById("adminStatus");
-const usersTbody = document.querySelector("#usersTable tbody");
-const endpointsTbody = document.querySelector("#endpointsTable tbody");
+const usersList = document.getElementById("usersList");
+const endpointsList = document.getElementById("endpointsList");
 const addUserForm = document.getElementById("addUserForm");
 const addEndpointForm = document.getElementById("addEndpointForm");
 const newUserAdminWrap = document.getElementById("newUserAdminWrap");
@@ -65,14 +65,13 @@ async function api(url, options) {
 }
 
 function renderUsers(users) {
-  usersTbody.innerHTML = "";
-  for (const user of users) {
-    const tr = document.createElement("tr");
-    const cells = [
-      "<td>" + displayValue(user.name) + "</td>",
-      "<td><span class='role-badge" + (user.isAdmin ? " is-admin" : "") + "'>" + roleLabel(user) + "</span></td>",
-    ];
+  usersList.innerHTML = "";
+  if (users.length === 0) {
+    usersList.innerHTML = "<p class='detail-empty'>No users yet.</p>";
+    return;
+  }
 
+  for (const user of users) {
     const actions = [];
     const isSelf = account && user.accountID === account.accountID;
 
@@ -90,9 +89,17 @@ function renderUsers(users) {
       );
     }
 
-    cells.push("<td class='admin-actions-col'>" + (actions.join(" ") || "<span class='muted'>&mdash;</span>") + "</td>");
-    tr.innerHTML = cells.join("");
-    usersTbody.appendChild(tr);
+    const row = document.createElement("div");
+    row.className = "av-row av-admin-row";
+    row.innerHTML =
+      "<div class='av-row-head av-grid-admin-users' role='row'>" +
+        "<div role='cell'>" + displayValue(user.name) + "</div>" +
+        "<div role='cell'><span class='role-badge" + (user.isAdmin ? " is-admin" : "") + "'>" + roleLabel(user) + "</span></div>" +
+        "<div role='cell' class='admin-actions-col'><div class='admin-row-actions'>" +
+          (actions.join("") || "<span class='muted'>&mdash;</span>") +
+        "</div></div>" +
+      "</div>";
+    usersList.appendChild(row);
   }
 }
 
@@ -133,10 +140,9 @@ function renderSecretPanel(endpointId, secret, context) {
 }
 
 function renderEndpoints(endpoints) {
-  endpointsTbody.innerHTML = "";
+  endpointsList.innerHTML = "";
   if (endpoints.length === 0) {
-    endpointsTbody.innerHTML =
-      "<tr><td colspan='6' class='muted'>No endpoints registered yet.</td></tr>";
+    endpointsList.innerHTML = "<p class='detail-empty'>No endpoints registered yet.</p>";
     return;
   }
   for (const endpoint of endpoints) {
@@ -163,56 +169,22 @@ function renderEndpoints(endpoints) {
       "<button type='button' class='secondary-button row-action danger' data-action='delete-endpoint' data-id='" + id + "'>Delete</button>",
     );
 
-    const mainRow = document.createElement("tr");
-    mainRow.className = "endpoint-row" + (isExpanded ? " is-secret-expanded" : "");
-    mainRow.dataset.endpointId = endpointId;
-    mainRow.innerHTML =
-      "<td><code>" + displayValue(endpointId) + "</code></td>" +
-      "<td>" + displayValue(endpoint.displayName) + "</td>" +
-      "<td>" + displayValue(endpoint.hostname) + "</td>" +
-      "<td>" + displayValue(endpoint.ip) + "</td>" +
-      "<td>" + escapeHtml(lastSeen) + "</td>" +
-      "<td class='admin-actions-col'><div class='admin-row-actions'>" + actions.join("") + "</div></td>";
-    endpointsTbody.appendChild(mainRow);
-
-    const secretRow = document.createElement("tr");
-    secretRow.className = "endpoint-secret-row";
-    secretRow.dataset.endpointId = endpointId;
-    secretRow.hidden = !isExpanded;
-    secretRow.innerHTML =
-      "<td colspan='6'>" +
+    const row = document.createElement("div");
+    row.className = "av-row av-admin-row endpoint-row" + (isExpanded ? " is-secret-expanded" : "");
+    row.dataset.endpointId = endpointId;
+    row.innerHTML =
+      "<div class='av-row-head av-grid-admin-endpoints' role='row'>" +
+        "<div role='cell'><code>" + displayValue(endpointId) + "</code></div>" +
+        "<div role='cell'>" + displayValue(endpoint.displayName) + "</div>" +
+        "<div role='cell'>" + displayValue(endpoint.hostname) + "</div>" +
+        "<div role='cell'>" + displayValue(endpoint.ip) + "</div>" +
+        "<div role='cell'>" + escapeHtml(lastSeen) + "</div>" +
+        "<div role='cell' class='admin-actions-col'><div class='admin-row-actions'>" + actions.join("") + "</div></div>" +
+      "</div>" +
+      "<div class='av-row-detail endpoint-secret-detail'" + (isExpanded ? "" : " hidden") + ">" +
         (isExpanded ? renderSecretPanel(endpointId, expanded.secret, expanded.context) : "") +
-      "</td>";
-    endpointsTbody.appendChild(secretRow);
-  }
-  requestAnimationFrame(syncEndpointsActionsColumnWidth);
-}
-
-function syncEndpointsActionsColumnWidth() {
-  const table = document.getElementById("endpointsTable");
-  if (!table) {
-    return;
-  }
-  const col = table.querySelector("col.col-admin-ep-actions");
-  const actionGroups = table.querySelectorAll("td.admin-actions-col .admin-row-actions");
-  if (!col || actionGroups.length === 0) {
-    return;
-  }
-  let maxWidth = 0;
-  for (const group of actionGroups) {
-    const cell = group.closest("td.admin-actions-col");
-    const groupWidth = group.getBoundingClientRect().width;
-    if (!cell) {
-      maxWidth = Math.max(maxWidth, groupWidth);
-      continue;
-    }
-    const styles = getComputedStyle(cell);
-    const padding =
-      parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
-    maxWidth = Math.max(maxWidth, groupWidth + padding);
-  }
-  if (maxWidth > 0) {
-    col.style.width = maxWidth + "px";
+      "</div>";
+    endpointsList.appendChild(row);
   }
 }
 
@@ -227,44 +199,49 @@ function collapseAllEndpointSecrets(exceptId) {
 function expandEndpointSecret(endpointId, secret, context) {
   collapseAllEndpointSecrets(endpointId);
   expandedSecretById[endpointId] = { secret, context };
-  const mainRow = endpointsTbody.querySelector("tr.endpoint-row[data-endpoint-id='" + endpointId + "']");
-  const secretRow = endpointsTbody.querySelector("tr.endpoint-secret-row[data-endpoint-id='" + endpointId + "']");
-  if (!mainRow || !secretRow) {
+  const mainRow = endpointsList.querySelector(".endpoint-row[data-endpoint-id='" + endpointId + "']");
+  if (!mainRow) {
+    return;
+  }
+  const detail = mainRow.querySelector(".endpoint-secret-detail");
+  if (!detail) {
     return;
   }
   mainRow.classList.add("is-secret-expanded");
-  secretRow.hidden = false;
-  secretRow.querySelector("td").innerHTML = renderSecretPanel(endpointId, secret, context);
+  detail.hidden = false;
+  detail.innerHTML = renderSecretPanel(endpointId, secret, context);
   const toggleBtn = mainRow.querySelector("button[data-action='toggle-secret']");
   if (toggleBtn) {
     toggleBtn.textContent = "Hide secret";
   }
-  requestAnimationFrame(syncEndpointsActionsColumnWidth);
-  secretRow.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function scrollToEndpointSecret(endpointId) {
-  const secretRow = endpointsTbody.querySelector("tr.endpoint-secret-row[data-endpoint-id='" + endpointId + "']");
-  if (secretRow && !secretRow.hidden) {
-    secretRow.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  const mainRow = endpointsList.querySelector(".endpoint-row[data-endpoint-id='" + endpointId + "']");
+  const detail = mainRow ? mainRow.querySelector(".endpoint-secret-detail") : null;
+  if (detail && !detail.hidden) {
+    detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 }
 
 function collapseEndpointSecret(endpointId) {
   delete expandedSecretById[endpointId];
-  const mainRow = endpointsTbody.querySelector("tr.endpoint-row[data-endpoint-id='" + endpointId + "']");
-  const secretRow = endpointsTbody.querySelector("tr.endpoint-secret-row[data-endpoint-id='" + endpointId + "']");
-  if (!mainRow || !secretRow) {
+  const mainRow = endpointsList.querySelector(".endpoint-row[data-endpoint-id='" + endpointId + "']");
+  if (!mainRow) {
+    return;
+  }
+  const detail = mainRow.querySelector(".endpoint-secret-detail");
+  if (!detail) {
     return;
   }
   mainRow.classList.remove("is-secret-expanded");
-  secretRow.hidden = true;
-  secretRow.querySelector("td").innerHTML = "";
+  detail.hidden = true;
+  detail.innerHTML = "";
   const toggleBtn = mainRow.querySelector("button[data-action='toggle-secret']");
   if (toggleBtn) {
     toggleBtn.textContent = "Show secret";
   }
-  requestAnimationFrame(syncEndpointsActionsColumnWidth);
 }
 
 async function loadUsers() {

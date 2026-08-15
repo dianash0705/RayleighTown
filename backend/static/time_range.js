@@ -34,6 +34,15 @@
     );
   }
 
+  function renderTimeRangeDateChip(dateId) {
+    const dateEl = document.getElementById(dateId || "timeRangeDate");
+    if (!dateEl) {
+      return;
+    }
+    const formatter = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric" });
+    dateEl.textContent = formatter.format(new Date());
+  }
+
   function initTimeRangeControls(options) {
     const opts = options || {};
     const root = document.getElementById(opts.rootId || "timeRange");
@@ -45,6 +54,8 @@
     const timeToInput = document.getElementById(opts.toId || "timeTo");
     const applyButton = document.getElementById(opts.applyButtonId || "applyTimeRange");
     const onChange = typeof opts.onChange === "function" ? opts.onChange : function () {};
+
+    renderTimeRangeDateChip(opts.dateId);
 
     if (!root || !toggle || !popover) {
       return {

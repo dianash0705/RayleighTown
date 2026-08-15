@@ -1,5 +1,5 @@
 const statusEl = document.getElementById("whitelistStatus");
-const tableBody = document.querySelector("#whitelistTable tbody");
+const list = document.getElementById("whitelistList");
 const emptyEl = document.getElementById("whitelistEmpty");
 const chipCount = document.getElementById("chipWhitelistCount");
 const addForm = document.getElementById("addWhitelistForm");
@@ -101,12 +101,14 @@ function matchSummary(entry) {
 }
 
 function renderRows(entries) {
-  tableBody.innerHTML = "";
+  list.innerHTML = "";
   chipCount.textContent = String(entries.length);
   emptyEl.hidden = entries.length > 0;
+  list.hidden = entries.length === 0;
 
   for (const entry of entries) {
-    const tr = document.createElement("tr");
+    const row = document.createElement("div");
+    row.className = "av-row av-whitelist-row";
     const scopeLabel = entry.scope === "organization"
       ? "Org-wide"
       : (entry.endpointName || entry.endpointID || "Endpoint");
@@ -114,30 +116,32 @@ function renderRows(entries) {
       " · " + entry.nativeEventID;
     const match = matchSummary(entry);
 
-    tr.innerHTML =
-      "<td class='whitelist-note-cell'><strong>" + escapeHtml(entry.note || "") + "</strong></td>" +
-      "<td>" + escapeHtml(eventLabel) +
-        (entry.logSource ? "<div class='muted-line'>" + escapeHtml(entry.logSource) + "</div>" : "") +
-      "</td>" +
-      "<td>" + escapeHtml(scopeLabel) + "</td>" +
-      "<td class='whitelist-match-cell'>" +
-        "<button type='button' class='whitelist-match-toggle' data-expand-match aria-expanded='false'>" +
-          escapeHtml(match.label) +
-          (match.details ? " <span class='whitelist-match-caret'>▾</span>" : "") +
-        "</button>" +
-        (match.details
-          ? "<div class='whitelist-match-details' hidden>" + match.details + "</div>"
-          : "") +
-      "</td>" +
-      "<td>" + escapeHtml(formatPeriodMs(entry.periodMs)) + "</td>" +
-      "<td>" + escapeHtml(formatWhen(entry.createdAt)) + "</td>" +
-      "<td>" + escapeHtml(entry.createdByName || "—") + "</td>" +
-      "<td class='admin-actions-col'>" +
-        "<button type='button' class='row-action danger' data-delete-id='" +
-        escapeHtml(entry.whitelistID) +
-        "'>Remove</button>" +
-      "</td>";
-    tableBody.appendChild(tr);
+    row.innerHTML =
+      "<div class='av-row-head av-grid-whitelist' role='row'>" +
+        "<div role='cell' class='whitelist-note-cell'><strong>" + escapeHtml(entry.note || "") + "</strong></div>" +
+        "<div role='cell'>" + escapeHtml(eventLabel) +
+          (entry.logSource ? "<div class='muted-line'>" + escapeHtml(entry.logSource) + "</div>" : "") +
+        "</div>" +
+        "<div role='cell'>" + escapeHtml(scopeLabel) + "</div>" +
+        "<div role='cell' class='whitelist-match-cell'>" +
+          "<button type='button' class='whitelist-match-toggle' data-expand-match aria-expanded='false'>" +
+            escapeHtml(match.label) +
+            (match.details ? " <span class='whitelist-match-caret'>▾</span>" : "") +
+          "</button>" +
+          (match.details
+            ? "<div class='whitelist-match-details' hidden>" + match.details + "</div>"
+            : "") +
+        "</div>" +
+        "<div role='cell'>" + escapeHtml(formatPeriodMs(entry.periodMs)) + "</div>" +
+        "<div role='cell'>" + escapeHtml(formatWhen(entry.createdAt)) + "</div>" +
+        "<div role='cell'>" + escapeHtml(entry.createdByName || "—") + "</div>" +
+        "<div role='cell' class='admin-actions-col whitelist-actions-cell'>" +
+          "<button type='button' class='row-action danger' data-delete-id='" +
+          escapeHtml(entry.whitelistID) +
+          "'>Remove</button>" +
+        "</div>" +
+      "</div>";
+    list.appendChild(row);
   }
 }
 
@@ -438,7 +442,7 @@ cancelAddPattern.addEventListener("click", function () {
   setStatus("");
 });
 
-tableBody.addEventListener("click", function (event) {
+list.addEventListener("click", function (event) {
   const expandButton = event.target.closest("[data-expand-match]");
   if (expandButton) {
     const cell = expandButton.closest(".whitelist-match-cell");

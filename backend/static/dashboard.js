@@ -150,10 +150,20 @@ function renderRankedList(container, items, emptyText, renderItem) {
 }
 
 function renderTopEvents(events) {
+  // Keep rows whose count is strictly higher than 50% of the leading type
+  // (e.g. top=10 → show only counts > 5). Lower-share types stay hidden.
+  const list = Array.isArray(events) ? events : [];
+  const maxCount = Math.max.apply(null, list.map(function (item) {
+    return Number(item.alertCount) || 0;
+  }).concat([0]));
+  const filtered = list.filter(function (item) {
+    return (Number(item.alertCount) || 0) > maxCount * 0.5;
+  });
+
   renderRankedList(
     topEventsList,
-    events,
-    "No alert events recorded in the past week.",
+    filtered,
+    "No alert events above the 50% threshold in this range.",
     function (event) {
       const alertsUrl = buildAlertsListUrl({ nativeEventID: String(event.nativeEventID) });
       return (

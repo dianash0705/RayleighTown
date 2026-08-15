@@ -4,9 +4,9 @@ const chipEntityCount = document.getElementById("chipEntityCount");
 const chipAlertCount = document.getElementById("chipAlertCount");
 const chipActiveCount = document.getElementById("chipActiveCount");
 const chipAlertsLabel = document.getElementById("chipAlertsLabel");
-const table = document.getElementById("entitiesTable");
-const tbody = table.querySelector("tbody");
-const sortableHeaders = Array.from(table.querySelectorAll("th.sortable"));
+const listHeader = document.getElementById("entitiesListHeader");
+const list = document.getElementById("entitiesList");
+const sortableHeaders = Array.from(listHeader.querySelectorAll(".av-col.sortable"));
 
 let currentEntities = [];
 let sortState = {
@@ -112,7 +112,7 @@ function compareEntities(left, right) {
 
 function updateSortIndicators() {
   for (const header of sortableHeaders) {
-    const indicator = header.querySelector(".sort-indicator");
+    const indicator = header.querySelector(".av-sort-indicator");
     const key = header.dataset.sortKey;
     if (!indicator) {
       continue;
@@ -143,25 +143,29 @@ function buildAlertsUrl(endpointID) {
 }
 
 function renderRows(entities) {
-  tbody.innerHTML = "";
+  list.innerHTML = "";
 
   for (const entity of entities) {
-    const tr = document.createElement("tr");
+    const row = document.createElement("div");
+    row.className = "av-row av-entity-row";
     const alertsUrl = buildAlertsUrl(entity.endpointID);
     const alertCount = Number(entity.alertCount ?? entity.alertsLastWeek ?? 0);
 
     const primaryName = entity.name ? escapeHtml(entity.name) : displayValue(entity.endpointID);
-    tr.innerHTML =
-      "<td><a class='entity-link' href='" + escapeHtml(alertsUrl) + "'>" + primaryName + "</a></td>" +
-      "<td><span class='entity-id'>" + displayValue(entity.endpointID) + "</span></td>" +
-      "<td>" + displayValue(entity.ip) + "</td>" +
-      "<td>" + renderEntityStatusCell(entity) + "</td>" +
-      "<td><span class='entity-alert-count" + (alertCount > 0 ? " has-alerts" : "") + "'>" + alertCount + "</span></td>";
+    row.innerHTML =
+      "<div class='av-row-head av-grid-entities' role='row'>" +
+        "<div role='cell'><a class='entity-link' href='" + escapeHtml(alertsUrl) + "'>" + primaryName + "</a></div>" +
+        "<div role='cell'><span class='entity-id'>" + displayValue(entity.endpointID) + "</span></div>" +
+        "<div role='cell'>" + displayValue(entity.ip) + "</div>" +
+        "<div role='cell'>" + renderEntityStatusCell(entity) + "</div>" +
+        "<div role='cell'><span class='entity-alert-count" + (alertCount > 0 ? " has-alerts" : "") + "'>" + alertCount + "</span></div>" +
+      "</div>";
 
-    tbody.appendChild(tr);
+    list.appendChild(row);
   }
 
-  table.hidden = entities.length === 0;
+  listHeader.hidden = entities.length === 0;
+  list.hidden = entities.length === 0;
 }
 
 function sortAndRenderEntities() {
@@ -183,12 +187,7 @@ function setSort(key) {
 }
 
 for (const header of sortableHeaders) {
-  const button = header.querySelector("button");
-  if (!button) {
-    continue;
-  }
-
-  button.addEventListener("click", function () {
+  header.addEventListener("click", function () {
     setSort(header.dataset.sortKey);
   });
 }
@@ -199,8 +198,9 @@ async function loadEntities() {
   } else {
     statusEl.textContent = "Loading...";
   }
-  table.hidden = true;
-  tbody.innerHTML = "";
+  listHeader.hidden = true;
+  list.hidden = true;
+  list.innerHTML = "";
 
   try {
     const query = timeRangeControls ? "?" + timeRangeControls.buildQueryParams().toString() : "";
@@ -225,7 +225,8 @@ async function loadEntities() {
     sortAndRenderEntities();
 
     if (currentEntities.length === 0) {
-      table.hidden = true;
+      listHeader.hidden = true;
+      list.hidden = true;
       if (window.PageStatus) {
         PageStatus.showEmpty(statusEl, {
           message: "No entities yet. Registered endpoints will appear here once an agent uploads logs.",
