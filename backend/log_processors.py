@@ -1,11 +1,12 @@
 from datetime import datetime, timezone
 import json
 import logging
+import shutil
 import subprocess
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from agent_event_filter import is_agent_generated_event
 from event_parsers import parse_event_details
@@ -214,7 +215,47 @@ def _extract_json_events(log_path: Path, event_id_whitelist, log_id: int):
     return events
 
 
-def extract_windows_evtx_events(log_path: Path, event_id_whitelist, log_id: int = 0):
+def _event_from_evtx_xml(xml_text: str, event_id_whitelist, log_id: int) -> dict[str, Any] | None:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+
+    native_event_id_text = root.findtext("./e:System/e:EventID", namespaces=EVENT_XML_NAMESPACE)
+    if native_event_id_text is None:
+        return None
+
+    try:
+        native_event_id = int(native_event_id_text)
+    except ValueError:
+        return None
+
+    if event_id_whitelist is not None and native_event_id not in event_id_whitelist:
+        return None
+
+    time_node = root.find("./e:System/e:TimeCreated", namespaces=EVENT_XML_NAMESPACE)
+    if time_node is None:
+        return None
+
+    system_time_text = time_node.attrib.get("SystemTime")
+    if not system_time_text:
+        return None
+
+    try:
+        timestamp_ms = _system_time_to_epoch_ms(system_time_text)
+    except ValueError:
+        return None
+
+    payload = _evtx_to_payload(root)
+    return _build_ingested_event(
+        log_id=log_id,
+        native_event_id=native_event_id,
+        timestamp_ms=timestamp_ms,
+        record=payload,
+    )
+
+
+def _iter_evtx_xml_via_wevtutil(log_path: Path) -> Iterator[str]:
     command = [
         "wevtutil",
         "qe",
@@ -226,55 +267,43 @@ def extract_windows_evtx_events(log_path: Path, event_id_whitelist, log_id: int 
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "Failed to read event log.")
 
-    fragments = result.stdout.split("</Event>")
-    events = []
-    for fragment in fragments:
+    for fragment in result.stdout.split("</Event>"):
         content = fragment.strip()
-        if not content:
-            continue
+        if content:
+            yield f"{content}</Event>"
 
-        xml_text = f"{content}</Event>"
-        try:
-            root = ET.fromstring(xml_text)
-        except ET.ParseError:
-            continue
 
-        native_event_id_text = root.findtext("./e:System/e:EventID", namespaces=EVENT_XML_NAMESPACE)
-        if native_event_id_text is None:
-            continue
+def _iter_evtx_xml_via_python_evtx(log_path: Path) -> Iterator[str]:
+    try:
+        from Evtx.Evtx import Evtx
+    except ImportError as exc:
+        raise RuntimeError(
+            "Cannot parse .evtx on this system: wevtutil is not installed "
+            "(Windows-only) and python-evtx is not available. "
+            "Install it with: pip install python-evtx"
+        ) from exc
 
-        try:
-            native_event_id = int(native_event_id_text)
-        except ValueError:
-            continue
+    with Evtx(str(log_path)) as log:
+        for record in log.records():
+            try:
+                xml_text = record.xml()
+            except Exception:
+                continue
+            if xml_text:
+                yield xml_text
 
-        if event_id_whitelist is not None and native_event_id not in event_id_whitelist:
-            continue
 
-        time_node = root.find("./e:System/e:TimeCreated", namespaces=EVENT_XML_NAMESPACE)
-        if time_node is None:
-            continue
+def extract_windows_evtx_events(log_path: Path, event_id_whitelist, log_id: int = 0):
+    if shutil.which("wevtutil"):
+        xml_records = _iter_evtx_xml_via_wevtutil(log_path)
+    else:
+        xml_records = _iter_evtx_xml_via_python_evtx(log_path)
 
-        system_time_text = time_node.attrib.get("SystemTime")
-        if not system_time_text:
-            continue
-
-        try:
-            timestamp_ms = _system_time_to_epoch_ms(system_time_text)
-        except ValueError:
-            continue
-
-        payload = _evtx_to_payload(root)
-        built_event = _build_ingested_event(
-            log_id=log_id,
-            native_event_id=native_event_id,
-            timestamp_ms=timestamp_ms,
-            record=payload,
-        )
-        if built_event is None:
-            continue
-        events.append(built_event)
-
+    events = []
+    for xml_text in xml_records:
+        built_event = _event_from_evtx_xml(xml_text, event_id_whitelist, log_id)
+        if built_event is not None:
+            events.append(built_event)
     return events
 
 

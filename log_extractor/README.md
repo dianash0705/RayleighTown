@@ -37,7 +37,7 @@ Modes:
 Optional backend override:
 
 ```powershell
-./extract_and_upload_security_log.ps1 -BackendUrl "http://localhost:2222/api/logs/upload"
+./extract_and_upload_security_log.ps1 -BackendUrl "http://localhost:443/api/logs/upload"
 ```
 
 Set a custom endpoint ID:
@@ -63,7 +63,7 @@ If you upload a JSON file, the script will attempt to read the first JSON record
 You can combine both options if needed:
 
 ```powershell
-./extract_and_upload_security_log.ps1 -BackendUrl "http://localhost:2222/api/logs/upload" -EndpointID "456" -CustomLogPath "C:\path\to\your\security.evtx"
+./extract_and_upload_security_log.ps1 -BackendUrl "http://localhost:443/api/logs/upload" -EndpointID "456" -CustomLogPath "C:\path\to\your\security.evtx"
 ```
 
 Behavior notes:

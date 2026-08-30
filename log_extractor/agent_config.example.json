@@ -1,5 +1,5 @@
 {
-  "backendUrl": "http://localhost:2222/api/logs/upload",
+  "backendUrl": "http://localhost:443/api/logs/upload",
   "endpointID": "ep_xxxxxxxxxxxx",
   "endpointSecret": "paste-the-secret-shown-once-in-the-admin-page",
   "taskName": "GirlMeetsCode-LogUploader",

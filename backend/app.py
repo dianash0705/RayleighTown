@@ -55,7 +55,7 @@ if _should_start_analysis_worker():
 def parse_args():
     parser = argparse.ArgumentParser(description="Run the backend web app.")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind to.")
-    parser.add_argument("--port", type=int, default=2222, help="Port to bind to.")
+    parser.add_argument("--port", type=int, default=443, help="Port to bind to.")
     parser.add_argument("--debug", action="store_true", help="Enable Flask debug mode.")
     return parser.parse_args()
 

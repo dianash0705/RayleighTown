@@ -33,7 +33,7 @@ if (-not $BackendUrl -and $config.backendUrl) { $BackendUrl = [string]$config.ba
 if ($config.taskName) { $TaskName = [string]$config.taskName }
 if ($config.scheduleIntervalMinutes) { $ScheduleIntervalMinutes = [int]$config.scheduleIntervalMinutes }
 
-if (-not $BackendUrl) { $BackendUrl = "http://localhost:2222/api/logs/upload" }
+if (-not $BackendUrl) { $BackendUrl = "http://localhost:443/api/logs/upload" }
 
 function Get-SourceNameFromJsonLine {
     param(
